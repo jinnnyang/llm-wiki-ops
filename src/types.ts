@@ -107,7 +107,7 @@ export interface MutationResult {
 
 export interface AddNodeInput {
   title: string
-  type: PageType
+  type?: PageType // default "synthesis"
   content?: string
   tags?: string[]
   related?: string[]

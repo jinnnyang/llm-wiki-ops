@@ -126,20 +126,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "add_node",
       description:
-        "Create a wiki page. Slug is derived from title (lowercase, spaces→hyphens, CJK preserved). If slug collides, appends -2/-3 and returns slug_collided=true — caller MUST inspect this before wiring edges. Content wikilinks are auto-synced into related[].",
+        "Create a wiki page. Slug is derived from title (lowercase, spaces→hyphens, CJK preserved). If slug collides, appends -2/-3 and returns slug_collided=true — caller MUST inspect this before wiring edges. Content wikilinks are auto-synced into related[]. Type defaults to 'synthesis' if omitted.",
       inputSchema: {
         type: "object",
         properties: {
           title: { type: "string", description: "Page title" },
-          type: { type: "string", description: "Page type (entity, concept, source, etc.)" },
+          type: { type: "string", description: "Page type (entity, concept, source, etc.). Default: synthesis" },
           content: { type: "string", description: "Page body (markdown)" },
           tags: { type: "array", items: { type: "string" }, description: "Tags" },
           related: { type: "array", items: { type: "string" }, description: "Related slugs" },
+          sources: { type: "array", items: { type: "string" }, description: "Source URLs or paths" },
           on_slug_conflict: { type: "string", enum: ["append", "error"], description: "Default: append" },
           dry_run: { type: "boolean", description: "Preview without writing" },
           wiki_root: wikiRootProp,
         },
-        required: ["title", "type"],
+        required: ["title"],
         additionalProperties: false,
       },
     },
@@ -149,12 +150,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {
-          slug: { type: "string", description: "Page slug" },
+          slug: { type: "string" },
           title: { type: "string" },
           type: { type: "string" },
           content: { type: "string" },
           tags: { type: "array", items: { type: "string" } },
           related: { type: "array", items: { type: "string" } },
+          sources: { type: "array", items: { type: "string" }, description: "Source URLs or paths (replaces)" },
           dry_run: { type: "boolean" },
           wiki_root: wikiRootProp,
         },
@@ -284,10 +286,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "add_node":
         result = await wiki.addNode({
           title: args!.title as string,
-          type: args!.type as string,
+          type: args?.type as string | undefined,
           content: args?.content as string | undefined,
           tags: args?.tags as string[] | undefined,
           related: args?.related as string[] | undefined,
+          sources: args?.sources as string[] | undefined,
           onSlugConflict: (args?.on_slug_conflict as "append" | "error") ?? "append",
           dryRun: args?.dry_run as boolean | undefined,
         })
@@ -300,6 +303,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: args?.content as string | undefined,
           tags: args?.tags as string[] | undefined,
           related: args?.related as string[] | undefined,
+          sources: args?.sources as string[] | undefined,
           dryRun: args?.dry_run as boolean | undefined,
         })
         break

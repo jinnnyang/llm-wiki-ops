@@ -106,7 +106,9 @@ export async function addNode(
   result.requestedSlug = requestedSlug
   result.slugStartsWithDigit = slugStartsWithDigit(requestedSlug)
 
-  if (input.type === "source") {
+  const type: PageType = input.type ?? "synthesis"
+
+  if (type === "source") {
     result.sourcesWarning = true
   }
 
@@ -122,7 +124,7 @@ export async function addNode(
   result.danglingRelated = mergedRelated.filter((r) => !existingSlugs.has(r))
 
   // Determine target path
-  const dir = typeDir(input.type)
+  const dir = typeDir(type)
   const targetDir = dir ? path.join(wikiDir, dir) : wikiDir
   let slug = requestedSlug
   let targetPath = path.join(targetDir, `${slug}.md`)
@@ -157,7 +159,7 @@ export async function addNode(
 
   // Build page content
   const fm: Record<string, unknown> = {
-    type: input.type,
+    type: type,
     title: input.title,
     created: today(),
     updated: today(),
@@ -188,7 +190,7 @@ export async function addNode(
     const node: GraphNode = {
       slug,
       title: input.title,
-      type: input.type,
+      type: type,
       tags: input.tags ?? [],
       related: mergedRelated,
       sources: input.sources ?? [],
@@ -227,7 +229,7 @@ function isSemanticMatch(
   mergedRelated: string[],
 ): boolean {
   if (existingFm.title !== input.title) return false
-  if (existingFm.type !== input.type) return false
+  if (existingFm.type !== (input.type ?? "synthesis")) return false
 
   // Set comparison for tags/related
   const existingTags = new Set(
