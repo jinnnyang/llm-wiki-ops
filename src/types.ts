@@ -1,0 +1,241 @@
+/**
+ * wiki-graph-ops — shared type definitions.
+ *
+ * Design doc: docs/design/wiki-graph-ops.md §5, §6
+ */
+
+// ── Page types ──────────────────────────────────────────────────────
+
+/**
+ * Known types (IDE completion + WikiStats ordering).
+ * NOT a closed enum — frontmatter can carry any string.
+ */
+export type KnownPageType =
+  | "entity"
+  | "concept"
+  | "source"
+  | "query"
+  | "comparison"
+  | "synthesis"
+  | "overview"
+
+/** Actual type: known types + arbitrary extension strings */
+export type PageType = KnownPageType | (string & {})
+
+// ── Graph model ─────────────────────────────────────────────────────
+
+export interface GraphNode {
+  slug: string
+  title: string
+  type: PageType
+  tags: string[]
+  related: string[]
+  sources: string[]
+  created: string // YYYY-MM-DD
+  updated: string // YYYY-MM-DD
+  path: string // relative to wikiRoot (e.g. "wiki/entities/ai基建周期.md")
+}
+
+export type EdgeOrigin = "wikilink" | "related"
+
+export interface GraphEdge {
+  source: string
+  target: string
+  origins: EdgeOrigin[]
+}
+
+export interface Graph {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
+
+// ── Read options ────────────────────────────────────────────────────
+
+export interface ReadGraphOptions {
+  type?: PageType
+  tag?: string
+  query?: string
+  center?: string
+  k?: number // BFS depth from center (default 1, max 5)
+  limit?: number // default 200, hard cap 500
+  cursor?: string // reserved for v2 pagination (ignored in v1)
+}
+
+export interface GetEdgesOptions {
+  k?: number // default 1
+  limit?: number // default 100, hard cap 500
+}
+
+/** k=1: { inbound, outbound }; k>1: flat edges + depth */
+export type GetEdgesResult =
+  | { inbound: GraphEdge[]; outbound: GraphEdge[] }
+  | { edges: Array<GraphEdge & { depth: number }> }
+
+// ── Page model (single page detail) ─────────────────────────────────
+
+export interface WikiPage {
+  slug: string
+  title: string
+  type: PageType
+  tags: string[]
+  related: string[]
+  sources: string[]
+  created: string
+  updated: string
+  content: string // body without frontmatter, without title heading
+  path: string
+}
+
+export interface WikiStats {
+  totalNodes: number
+  totalEdges: number
+  types: Record<string, number>
+  topTags: Array<{ tag: string; count: number }>
+  largestNeighborhoods: Array<{ slug: string; degree: number }>
+}
+
+// ── Mutation results ────────────────────────────────────────────────
+
+export interface MutationResult {
+  filesTouched: string[]
+  indexUpdated: boolean
+  wikiRootUsed: string
+  dryRun: boolean
+}
+
+// ── Node operations ─────────────────────────────────────────────────
+
+export interface AddNodeInput {
+  title: string
+  type: PageType
+  content?: string
+  tags?: string[]
+  related?: string[]
+  sources?: string[]
+  onSlugConflict?: "append" | "error" // default "append"
+  dryRun?: boolean
+}
+
+export interface AddNodeResult extends MutationResult {
+  slug: string
+  requestedSlug: string
+  slugCollided: boolean
+  slugStartsWithDigit: boolean
+  danglingRelated: string[]
+  path: string
+  sourcesWarning?: boolean
+}
+
+export interface UpdateNodePatch {
+  title?: string
+  type?: PageType
+  content?: string
+  tags?: string[]
+  related?: string[]
+  sources?: string[]
+  dryRun?: boolean
+}
+
+export interface UpdateNodeResult extends MutationResult {
+  slug: string
+  fieldsChanged: string[]
+  moved?: { from: string; to: string }
+}
+
+export interface RenameNodeOptions {
+  dryRun?: boolean
+}
+
+export interface RenameResult extends MutationResult {
+  oldSlug: string
+  newSlug: string
+  referencesUpdated: number
+  moved?: { from: string; to: string }
+}
+
+export type DanglingRefMode = "strikethrough" | "plain-text" | "remove"
+
+export interface DeleteNodeOptions {
+  danglingRefs?: DanglingRefMode // default "strikethrough"
+  dryRun?: boolean
+}
+
+export interface DeleteResult extends MutationResult {
+  deletedPath: string
+  referencesUpdated: number
+}
+
+export interface RebuildIndexResult extends MutationResult {
+  entriesWritten: number
+}
+
+// ── Edge operations ─────────────────────────────────────────────────
+
+export interface AddEdgeOptions {
+  context?: string
+  dryRun?: boolean
+}
+
+export interface AddEdgeResult extends MutationResult {
+  created: boolean
+  originsBefore: EdgeOrigin[]
+  originsAfter: EdgeOrigin[]
+}
+
+export interface RemoveEdgeOptions {
+  dryRun?: boolean
+}
+
+export interface RemoveEdgeResult extends MutationResult {
+  removed: boolean
+  originsBefore: EdgeOrigin[]
+}
+
+// ── Cleanup ─────────────────────────────────────────────────────────
+
+export interface CleanupResult {
+  removedFiles: string[]
+}
+
+// ── Constructor options ─────────────────────────────────────────────
+
+export interface WikiGraphOptions {
+  maintainIndex?: boolean // default true
+  maintainLog?: boolean // default false
+  strictVerify?: boolean // default false (sha256 in optimistic check)
+  slugStrategy?: "preserve-cjk" | "pinyin" | "ascii-only" // v1: preserve-cjk only
+}
+
+// ── Type → directory mapping ────────────────────────────────────────
+
+/** Hard-coded mapping for known types (directory names are NOT simple plurals). */
+export const TYPE_DIR_MAP: Record<KnownPageType, string> = {
+  entity: "entities",
+  concept: "concepts",
+  source: "sources",
+  query: "queries",
+  comparison: "comparisons",
+  synthesis: "synthesis",
+  overview: "", // wiki/ root
+}
+
+/** Reverse: directory name → type. Built from TYPE_DIR_MAP. */
+export const DIR_TYPE_MAP: Record<string, KnownPageType> = Object.fromEntries(
+  Object.entries(TYPE_DIR_MAP)
+    .filter(([type, dir]) => dir !== "")
+    .map(([type, dir]) => [dir, type as KnownPageType]),
+)
+
+/** Infrastructure files that are NOT nodes. */
+export const INFRA_FILES = new Set(["index.md", "log.md"])
+
+/** Ordered known types for stats/index display. */
+export const KNOWN_TYPE_ORDER: KnownPageType[] = [
+  "entity",
+  "concept",
+  "source",
+  "query",
+  "comparison",
+  "synthesis",
+  "overview",
+]
