@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — source overlap / near-duplicate detection.
+ * llm-wiki-ops — source overlap / near-duplicate detection.
  *
  * Inverted index: source → pages.
  * Duplicate signal 1: pages sharing identical source sets.

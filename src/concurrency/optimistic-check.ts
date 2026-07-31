@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — optimistic concurrency check (mtime + size).
+ * llm-wiki-ops — optimistic concurrency check (mtime + size).
  *
  * Design doc: §8.3
  *

@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — metrics module.
+ * llm-wiki-ops — metrics module.
  *
  * Unified entry point: computeMetrics(graph) runs all four analyses.
  * Each sub-module is also independently importable.

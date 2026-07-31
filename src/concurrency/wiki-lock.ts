@@ -1,10 +1,10 @@
 /**
- * wiki-graph-ops — wiki-level exclusive write lock.
+ * llm-wiki-ops — wiki-level exclusive write lock.
  *
  * Design doc: §8.2
  *
  * Uses proper-lockfile (advisory mutex, NOT a RW lock).
- * Lock file: <wikiRoot>/.wiki-graph-ops.lock
+ * Lock file: <wikiRoot>/.llm-wiki-ops.lock
  * Timeout: 30s (covers 200+ file cascade rename).
  */
 
@@ -25,7 +25,7 @@ export interface WikiLockHandle {
  * Throws LockTimeoutError if the lock cannot be acquired within 30s.
  */
 export async function acquireWikiLock(wikiRoot: string): Promise<WikiLockHandle> {
-  const lockDir = path.join(wikiRoot, ".wiki-graph-ops")
+  const lockDir = path.join(wikiRoot, ".llm-wiki-ops")
   await fs.mkdir(lockDir, { recursive: true })
 
   // proper-lockfile locks a *directory* (or file). We lock the state dir.
@@ -42,7 +42,7 @@ export async function acquireWikiLock(wikiRoot: string): Promise<WikiLockHandle>
         factor: 1.5,
       },
       onCompromised: (err) => {
-        console.warn(`[wiki-graph-ops] lock compromised: ${err.message}`)
+        console.warn(`[llm-wiki-ops] lock compromised: ${err.message}`)
       },
     })
   } catch (e: unknown) {

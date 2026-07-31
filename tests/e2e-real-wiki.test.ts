@@ -15,7 +15,7 @@ import { readGraph, getStats } from "../src/core/graph-builder.js"
 import { WikiGraphError, ResultTooLargeError, ExternalModificationError } from "../src/utils/errors.js"
 
 const SOURCE_WIKI = process.env.WIKI_E2E_SOURCE ?? "C:\\Users\\jinnn\\Documents\\wiki-builder\\wikis\\economic-analysis"
-const WIKI_ROOT = process.env.WIKI_E2E_ROOT ?? "C:\\Users\\jinnn\\AppData\\Local\\Temp\\wiki-graph-e2e-test"
+const WIKI_ROOT = process.env.WIKI_E2E_ROOT ?? "C:\\Users\\jinnn\\AppData\\Local\\Temp\\llm-wiki-e2e-test"
 const WIKI_DIR = path.join(WIKI_ROOT, "wiki")
 
 /** Skip the entire suite when the source wiki isn't available (CI, other machines). */

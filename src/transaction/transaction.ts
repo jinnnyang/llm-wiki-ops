@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — multi-file transaction with best-effort rollback.
+ * llm-wiki-ops — multi-file transaction with best-effort rollback.
  *
  * Design doc: §8.5
  *
@@ -73,7 +73,7 @@ export async function executeTransaction(
     await verifySnapshots(snapshots, opts.strictVerify)
 
     // ── Inflight marker for large cascades ──
-    const inflightPath = path.join(opts.wikiRoot, ".wiki-graph-ops", `.inflight-${txid}.json`)
+    const inflightPath = path.join(opts.wikiRoot, ".llm-wiki-ops", `.inflight-${txid}.json`)
     if (changes.length > LARGE_CASCADE_THRESHOLD) {
       await fs.mkdir(path.dirname(inflightPath), { recursive: true })
       await fs.writeFile(

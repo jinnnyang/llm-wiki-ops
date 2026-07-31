@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — frontmatter parsing & serialization.
+ * llm-wiki-ops — frontmatter parsing & serialization.
  *
  * Copied + adapted from llm-wiki app's src/lib/frontmatter.ts.
  * Design doc: §13.1

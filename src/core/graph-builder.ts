@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — graph builder (read operations).
+ * llm-wiki-ops — graph builder (read operations).
  *
  * Design doc: §6.2 (read ops), §5 (graph model), §6.7 (observability)
  *
@@ -263,7 +263,7 @@ export async function readGraph(
   const elapsed = Date.now() - startTime
   if (elapsed > 1000 || allPages.length > 3000) {
     console.warn(
-      `[wiki-graph-ops] readGraph took ${elapsed}ms (nodes=${allPages.length}, edges=${fullGraph.edges.length}) — consider adding filters`,
+      `[llm-wiki-ops] readGraph took ${elapsed}ms (nodes=${allPages.length}, edges=${fullGraph.edges.length}) — consider adding filters`,
     )
   }
 
@@ -324,6 +324,7 @@ export async function getEdges(
   }
 
   // k > 1: BFS with depth
+  const adj = buildAdjacency(graph.edges)
   const edgesWithDepth: Array<GraphEdge & { depth: number }> = []
   const visited = new Set<string>([norm])
   let frontier = [norm]
@@ -331,16 +332,12 @@ export async function getEdges(
   for (let depth = 1; depth <= k; depth++) {
     const nextFrontier: string[] = []
     for (const nodeSlug of frontier) {
-      for (const edge of graph.edges) {
-        if (edge.source === nodeSlug && !visited.has(edge.target)) {
+      for (const edge of adj.get(nodeSlug) ?? []) {
+        const neighbor = edge.source === nodeSlug ? edge.target : edge.source
+        if (!visited.has(neighbor)) {
           edgesWithDepth.push({ ...edge, depth })
-          visited.add(edge.target)
-          nextFrontier.push(edge.target)
-        }
-        if (edge.target === nodeSlug && !visited.has(edge.source)) {
-          edgesWithDepth.push({ ...edge, depth })
-          visited.add(edge.source)
-          nextFrontier.push(edge.source)
+          visited.add(neighbor)
+          nextFrontier.push(neighbor)
         }
       }
     }
@@ -414,21 +411,31 @@ export async function getStats(wikiDir: string, wikiRoot: string): Promise<WikiS
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+/** Build an undirected adjacency list from graph edges. O(E). */
+function buildAdjacency(edges: GraphEdge[]): Map<string, GraphEdge[]> {
+  const adj = new Map<string, GraphEdge[]>()
+  for (const edge of edges) {
+    if (!adj.has(edge.source)) adj.set(edge.source, [])
+    if (!adj.has(edge.target)) adj.set(edge.target, [])
+    adj.get(edge.source)!.push(edge)
+    adj.get(edge.target)!.push(edge)
+  }
+  return adj
+}
+
 function bfsNeighborhood(graph: Graph, center: string, k: number): Set<string> {
+  const adj = buildAdjacency(graph.edges)
   const visited = new Set<string>([center])
   let frontier = [center]
 
   for (let depth = 0; depth < k; depth++) {
     const next: string[] = []
     for (const slug of frontier) {
-      for (const edge of graph.edges) {
-        if (edge.source === slug && !visited.has(edge.target)) {
-          visited.add(edge.target)
-          next.push(edge.target)
-        }
-        if (edge.target === slug && !visited.has(edge.source)) {
-          visited.add(edge.source)
-          next.push(edge.source)
+      for (const edge of adj.get(slug) ?? []) {
+        const neighbor = edge.source === slug ? edge.target : edge.source
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor)
+          next.push(neighbor)
         }
       }
     }

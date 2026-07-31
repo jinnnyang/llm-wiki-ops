@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — type distribution / balance.
+ * llm-wiki-ops — type distribution / balance.
  *
  * Pages per type, dominant type, empty known types.
  * Pure functions on Graph — no I/O.

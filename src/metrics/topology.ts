@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — topology metrics.
+ * llm-wiki-ops — topology metrics.
  *
  * Degree distribution, hub detection, connected components, fragmentation.
  * Pure functions on Graph — no I/O.

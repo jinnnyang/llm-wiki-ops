@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — edge operations (addEdge / removeEdge).
+ * llm-wiki-ops — edge operations (addEdge / removeEdge).
  *
  * Design doc: §6.4
  *
@@ -12,15 +12,16 @@
  */
 
 import * as path from "node:path"
-import { parseFrontmatter, serializeFrontmatter } from "../io/frontmatter.js"
+import { parseFrontmatter } from "../io/frontmatter.js"
 import {
   hasWikilink,
   insertWikilink,
   removeWikilinks,
 } from "../io/wikilink.js"
-import { readFileClean, findMarkdownFiles } from "../io/fs-helpers.js"
+import { readFileClean } from "../io/fs-helpers.js"
 import { normalizeSlug } from "../utils/slug.js"
 import { executeTransaction, type FileChange } from "../transaction/transaction.js"
+import { today, composePage, baseMutation, findPageBySlug } from "./helpers.js"
 import { WikiGraphError } from "../utils/errors.js"
 import {
   type AddEdgeOptions,
@@ -28,36 +29,9 @@ import {
   type RemoveEdgeOptions,
   type RemoveEdgeResult,
   type EdgeOrigin,
-  type MutationResult,
-  INFRA_FILES,
 } from "../types.js"
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-
-function baseMutation(wikiRoot: string, dryRun: boolean): MutationResult {
-  return { filesTouched: [], indexUpdated: false, wikiRootUsed: wikiRoot, dryRun }
-}
-
-/** Find a page file by slug across all subdirectories. */
-async function findPageBySlug(wikiDir: string, slug: string): Promise<string | null> {
-  const norm = normalizeSlug(slug)
-  const files = await findMarkdownFiles(wikiDir)
-  const matches: string[] = []
-  for (const f of files) {
-    if (INFRA_FILES.has(path.basename(f))) continue
-    if (normalizeSlug(path.basename(f, ".md")) === norm) matches.push(f)
-  }
-  if (matches.length > 1) {
-    throw new WikiGraphError("AMBIGUOUS_SLUG", `Slug "${slug}" matches ${matches.length} files`, {
-      detail: matches.map((m) => path.relative(wikiDir, m).replace(/\\/g, "/")).join(", "),
-    })
-  }
-  return matches[0] ?? null
-}
 
 /** Check if frontmatter related[] contains a slug. */
 function relatedHas(fm: Record<string, unknown> | null, slug: string): boolean {
@@ -80,11 +54,6 @@ function removeRelated(fm: Record<string, unknown>, slug: string): void {
   if (!Array.isArray(fm.related)) return
   const norm = normalizeSlug(slug)
   fm.related = (fm.related as string[]).filter((r) => normalizeSlug(String(r)) !== norm)
-}
-
-/** Rebuild a page from frontmatter + body. */
-function composePage(fm: Record<string, unknown>, body: string): string {
-  return `${serializeFrontmatter(fm)}\n${body}`
 }
 
 // ── addEdge ─────────────────────────────────────────────────────────
@@ -126,7 +95,7 @@ export async function addEdge(
 
   // Read source page
   const { content: srcContent } = await readFileClean(srcPath)
-  const { frontmatter: srcFm, body: srcBody, rawBlock: srcRawBlock } = parseFrontmatter(srcContent)
+  const { frontmatter: srcFm, body: srcBody } = parseFrontmatter(srcContent)
 
   const hasWl = hasWikilink(srcBody, tgtNorm)
   const hasRel = isSelfLoop ? false : relatedHas(srcFm as Record<string, unknown> | null, tgtNorm)
@@ -168,29 +137,12 @@ export async function addEdge(
   if (!srcFm && !isSelfLoop) {
     // Auto-created frontmatter: related only, no type (§13.1)
     fm.related = [tgtNorm]
-    fm.updated = today()
-    const newContent = `${serializeFrontmatter(fm)}\n${newBody}`
-    changes.push({ path: srcPath, oldContent: srcContent, newContent, expectExists: true })
-  } else {
-    // Bump updated
-    fm.updated = today()
-    const newContent = srcRawBlock
-      ? srcContent.replace(srcRawBlock, serializeFrontmatter(fm))
-      : composePage(fm, newBody)
-
-    // If rawBlock existed but we changed body too, reconstruct properly
-    if (srcRawBlock && newBody !== srcBody) {
-      const fullContent = serializeFrontmatter(fm) + "\n" + newBody
-      changes.push({ path: srcPath, oldContent: srcContent, newContent: fullContent, expectExists: true })
-    } else if (srcRawBlock) {
-      // Only frontmatter changed
-      const fullContent = srcContent.replace(srcRawBlock, serializeFrontmatter(fm))
-      changes.push({ path: srcPath, oldContent: srcContent, newContent: fullContent, expectExists: true })
-    } else {
-      // No rawBlock but body changed (shouldn't happen if srcFm exists, but safety)
-      changes.push({ path: srcPath, oldContent: srcContent, newContent: composePage(fm, newBody), expectExists: true })
-    }
   }
+
+  // Bump updated and reconstruct uniformly
+  fm.updated = today()
+  const newContent = composePage(fm, newBody)
+  changes.push({ path: srcPath, oldContent: srcContent, newContent, expectExists: true })
 
   const tx = await executeTransaction(changes, { wikiRoot, strictVerify, dryRun })
   result.filesTouched = tx.filesWritten.map((f) =>
@@ -238,7 +190,7 @@ export async function removeEdge(
 
   // Read source page
   const { content: srcContent } = await readFileClean(srcPath)
-  const { frontmatter: srcFm, body: srcBody, rawBlock: srcRawBlock } = parseFrontmatter(srcContent)
+  const { frontmatter: srcFm, body: srcBody } = parseFrontmatter(srcContent)
 
   const hasWl = hasWikilink(srcBody, tgtNorm)
   const hasRel = isSelfLoop ? false : relatedHas(srcFm as Record<string, unknown> | null, tgtNorm)
@@ -267,26 +219,13 @@ export async function removeEdge(
     removeRelated(fm, tgtNorm)
   }
 
-  // Bump updated
+  // Bump updated and reconstruct uniformly
   if (srcFm) {
     fm.updated = today()
   }
 
-  // Reconstruct page
-  if (srcRawBlock) {
-    if (newBody !== srcBody) {
-      const fullContent = serializeFrontmatter(fm) + "\n" + newBody
-      changes.push({ path: srcPath, oldContent: srcContent, newContent: fullContent, expectExists: true })
-    } else {
-      const fullContent = srcContent.replace(srcRawBlock, serializeFrontmatter(fm))
-      changes.push({ path: srcPath, oldContent: srcContent, newContent: fullContent, expectExists: true })
-    }
-  } else if (srcFm) {
-    changes.push({ path: srcPath, oldContent: srcContent, newContent: composePage(fm, newBody), expectExists: true })
-  } else {
-    // No frontmatter, only wikilink removal
-    changes.push({ path: srcPath, oldContent: srcContent, newContent: newBody, expectExists: true })
-  }
+  const newContent = srcFm ? composePage(fm, newBody) : newBody
+  changes.push({ path: srcPath, oldContent: srcContent, newContent, expectExists: true })
 
   const tx = await executeTransaction(changes, { wikiRoot, strictVerify, dryRun })
   result.filesTouched = tx.filesWritten.map((f) =>

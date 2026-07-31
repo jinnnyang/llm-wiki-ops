@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * wiki-graph-mcp — MCP server for wiki-graph-ops.
+ * wiki-graph-mcp — MCP server for llm-wiki-ops.
  *
  * Design doc: §11.3, §11.4
  *
@@ -54,7 +54,7 @@ function getWiki(wikiRoot?: string): WikiGraph {
 // ── Server setup ────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "wiki-graph-ops", version: "0.1.0" },
+  { name: "llm-wiki-ops", version: "0.1.0" },
   { capabilities: { tools: {} } },
 )
 

@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — cross-type edge matrix.
+ * llm-wiki-ops — cross-type edge matrix.
  *
  * For each (sourceType, targetType) pair, counts edges and computes
  * the fraction of sourceType's outgoing edges going to targetType.

@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — [[wikilink]] extraction, insertion, removal, replacement.
+ * llm-wiki-ops — [[wikilink]] extraction, insertion, removal, replacement.
  *
  * Design doc: §6.4 (edge ops), §6.3 (addNode auto-sync)
  *

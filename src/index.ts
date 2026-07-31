@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — main WikiGraph class.
+ * llm-wiki-ops — main WikiGraph class.
  *
  * Design doc: §5 (constructor), §6 (all operations)
  *
@@ -138,7 +138,7 @@ export class WikiGraph {
     }
 
     // Also clean .inflight-*.json markers
-    const stateDir = path.join(this.wikiRoot, ".wiki-graph-ops")
+    const stateDir = path.join(this.wikiRoot, ".llm-wiki-ops")
     try {
       const entries = await fs.readdir(stateDir)
       for (const entry of entries) {

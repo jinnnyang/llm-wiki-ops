@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — structured error model.
+ * llm-wiki-ops — structured error model.
  *
  * Design doc: §10
  */

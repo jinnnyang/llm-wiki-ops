@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * wiki-graph-ops CLI — wiki-graph
+ * llm-wiki-ops CLI — llm-wiki-ops
  *
  * Design doc: §11.2
  *
  * Commands: stats, read, get-node, get-edges, add-node, update-node,
  *           rename-node, delete-node, add-edge, remove-edge, rebuild-index
  *
- * Global options: --json, --no-index
+ * Global options: --json, --no-index, --wiki <path>
+ * Wiki root resolution: --wiki > WIKI_ROOT env
  * --content supports: "text" | - (stdin) | @file
  */
 
@@ -19,16 +20,43 @@ import { WikiGraphError } from "../utils/errors.js"
 const program = new Command()
 
 program
-  .name("wiki-graph")
+  .name("llm-wiki-ops")
   .description("Graph-level operations for llm-wiki knowledge bases")
   .version("0.1.0")
   .option("--json", "machine-readable JSON output")
   .option("--no-index", "skip index.md maintenance")
+  .option("--wiki <path>", "wiki root directory (default: $WIKI_ROOT)")
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-function makeWiki(wikiRoot: string, opts: { index?: boolean }): WikiGraph {
-  return new WikiGraph(wikiRoot, { maintainIndex: opts.index !== false })
+/** Resolve wiki root: --wiki global > WIKI_ROOT env > error. */
+function resolveWikiRoot(): string {
+  const root = program.opts().wiki ?? process.env.WIKI_ROOT
+  if (!root) {
+    console.error(
+      "Error: no wiki root specified.\n" +
+      "  Use --wiki <path> or set the WIKI_ROOT environment variable.",
+    )
+    process.exit(1)
+  }
+  return root
+}
+
+/**
+ * Boilerplate wrapper: resolve wiki root → validate → cleanup → run fn → handle errors.
+ * Eliminates the repeated 5-line preamble in every command.
+ */
+async function withWiki(fn: (wiki: WikiGraph) => Promise<unknown>): Promise<void> {
+  const wikiRoot = resolveWikiRoot()
+  const wiki = new WikiGraph(wikiRoot, { maintainIndex: program.opts().index !== false })
+  await wiki.validate()
+  await wiki.cleanup()
+  try {
+    const result = await fn(wiki)
+    output(result, jsonFlag())
+  } catch (e) {
+    handleError(e, jsonFlag())
+  }
 }
 
 function output(data: unknown, json: boolean): void {
@@ -74,7 +102,6 @@ function handleError(e: unknown, json: boolean): never {
 async function resolveContent(value: string | undefined): Promise<string | undefined> {
   if (value === undefined) return undefined
   if (value === "-") {
-    // Read from stdin
     const chunks: Buffer[] = []
     for await (const chunk of process.stdin) {
       chunks.push(chunk as Buffer)
@@ -118,85 +145,63 @@ function safeEnum<T extends string>(value: string | undefined, flag: string, all
 const jsonFlag = () => !!program.opts().json
 
 program
-  .command("stats <wikiRoot>")
+  .command("stats")
   .description("Lightweight wiki overview (<2KB)")
-  .action(async (wikiRoot: string) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    const stats = await wiki.getStats()
-    output(stats, jsonFlag())
+  .action(async () => {
+    await withWiki((wiki) => wiki.getStats())
   })
 
 program
-  .command("read <wikiRoot>")
+  .command("read")
   .description("Query a subgraph with filters")
   .option("--type <type>", "filter by page type")
   .option("--tag <tag>", "filter by tag")
   .option("--query <query>", "substring search on title/slug")
   .option("--center <slug>", "BFS center node")
-  .option("-k, --k <n>", "BFS depth (default 1, max 5)")
+  .option("-k, --depth <n>", "BFS depth (default 1, max 5)")
   .option("--limit <n>", "max nodes (default 200, max 500)")
-  .action(async (wikiRoot: string, opts: Record<string, unknown>) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    try {
-      const graph = await wiki.readGraph({
+  .action(async (opts: Record<string, unknown>) => {
+    await withWiki((wiki) =>
+      wiki.readGraph({
         type: opts.type as string | undefined,
         tag: opts.tag as string | undefined,
         query: opts.query as string | undefined,
         center: opts.center as string | undefined,
-        k: safeInt(opts.k as string | undefined, "--k"),
+        k: safeInt(opts.depth as string | undefined, "--depth"),
         limit: safeInt(opts.limit as string | undefined, "--limit"),
-      })
-      output(graph, jsonFlag())
-    } catch (e) {
-      handleError(e, jsonFlag())
-    }
+      }),
+    )
   })
 
 program
-  .command("get-node <wikiRoot> <slug>")
+  .command("get-node <slug>")
   .description("Get a single page's full detail")
-  .action(async (wikiRoot: string, slug: string) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    const page = await wiki.getNode(slug)
-    if (!page) {
-      if (jsonFlag()) {
-        console.error(JSON.stringify({ error: "NODE_NOT_FOUND", message: `Node "${slug}" not found` }))
-      } else {
-        console.error(`Node "${slug}" not found`)
+  .action(async (slug: string) => {
+    await withWiki(async (wiki) => {
+      const page = await wiki.getNode(slug)
+      if (!page) {
+        throw new WikiGraphError("NODE_NOT_FOUND", `Node "${slug}" not found`, { slug })
       }
-      process.exit(1)
-    }
-    output(page, jsonFlag())
+      return page
+    })
   })
 
 program
-  .command("get-edges <wikiRoot> <slug>")
+  .command("get-edges <slug>")
   .description("Get inbound + outbound edges for a node")
-  .option("-k, --k <n>", "BFS depth (default 1)")
+  .option("-k, --depth <n>", "BFS depth (default 1)")
   .option("--limit <n>", "max edges (default 100)")
-  .action(async (wikiRoot: string, slug: string, opts: Record<string, unknown>) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    try {
-      const edges = await wiki.getEdges(slug, {
-        k: safeInt(opts.k as string | undefined, "--k"),
+  .action(async (slug: string, opts: Record<string, unknown>) => {
+    await withWiki((wiki) =>
+      wiki.getEdges(slug, {
+        k: safeInt(opts.depth as string | undefined, "--depth"),
         limit: safeInt(opts.limit as string | undefined, "--limit"),
-      })
-      output(edges, jsonFlag())
-    } catch (e) {
-      handleError(e, jsonFlag())
-    }
+      }),
+    )
   })
 
 program
-  .command("add-node <wikiRoot>")
+  .command("add-node")
   .description("Create a new wiki page")
   .requiredOption("--title <title>", "page title")
   .option("--type <type>", "page type (default: synthesis)")
@@ -206,13 +211,10 @@ program
   .option("--sources <sources>", "comma-separated source URLs")
   .option("--on-slug-conflict <mode>", "append | error (default: append)")
   .option("--dry-run", "preview without writing")
-  .action(async (wikiRoot: string, opts: Record<string, unknown>) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
+  .action(async (opts: Record<string, unknown>) => {
     const content = await resolveContent(opts.content as string | undefined)
-    try {
-      const result = await wiki.addNode({
+    await withWiki((wiki) =>
+      wiki.addNode({
         title: opts.title as string,
         type: opts.type as string | undefined,
         content,
@@ -221,15 +223,12 @@ program
         sources: parseList(opts.sources as string | undefined),
         onSlugConflict: safeEnum(opts.onSlugConflict as string | undefined, "--on-slug-conflict", ["append", "error"] as const) ?? "append",
         dryRun: !!opts.dryRun,
-      })
-      output(result, jsonFlag())
-    } catch (e) {
-      handleError(e, jsonFlag())
-    }
+      }),
+    )
   })
 
 program
-  .command("update-node <wikiRoot> <slug>")
+  .command("update-node <slug>")
   .description("Update a page's attributes")
   .option("--title <title>", "new title")
   .option("--type <type>", "new type (triggers directory move)")
@@ -238,13 +237,10 @@ program
   .option("--related <related>", "comma-separated related slugs (replaces)")
   .option("--sources <sources>", "comma-separated sources (replaces)")
   .option("--dry-run", "preview without writing")
-  .action(async (wikiRoot: string, slug: string, opts: Record<string, unknown>) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
+  .action(async (slug: string, opts: Record<string, unknown>) => {
     const content = await resolveContent(opts.content as string | undefined)
-    try {
-      const result = await wiki.updateNode(slug, {
+    await withWiki((wiki) =>
+      wiki.updateNode(slug, {
         title: opts.title as string | undefined,
         type: opts.type as string | undefined,
         content,
@@ -252,105 +248,70 @@ program
         related: parseList(opts.related as string | undefined),
         sources: parseList(opts.sources as string | undefined),
         dryRun: !!opts.dryRun,
-      })
-      output(result, jsonFlag())
-    } catch (e) {
-      handleError(e, jsonFlag())
-    }
+      }),
+    )
   })
 
 program
-  .command("rename-node <wikiRoot> <oldSlug> <newSlug>")
+  .command("rename-node <oldSlug> <newSlug>")
   .description("Rename a page and cascade-update all references")
   .option("--dry-run", "preview without writing")
-  .action(async (wikiRoot: string, oldSlug: string, newSlug: string, opts: Record<string, unknown>) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    try {
-      const result = await wiki.renameNode(oldSlug, newSlug, { dryRun: !!opts.dryRun })
-      output(result, jsonFlag())
-    } catch (e) {
-      handleError(e, jsonFlag())
-    }
+  .action(async (oldSlug: string, newSlug: string, opts: Record<string, unknown>) => {
+    await withWiki((wiki) =>
+      wiki.renameNode(oldSlug, newSlug, { dryRun: !!opts.dryRun }),
+    )
   })
 
 program
-  .command("delete-node <wikiRoot> <slug>")
+  .command("delete-node <slug>")
   .description("Delete a page and clean all references")
   .option("--dangling-refs <mode>", "strikethrough | plain-text | remove (default: strikethrough)")
   .option("--dry-run", "preview without writing")
-  .action(async (wikiRoot: string, slug: string, opts: Record<string, unknown>) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    try {
-      const result = await wiki.deleteNode(slug, {
+  .action(async (slug: string, opts: Record<string, unknown>) => {
+    await withWiki((wiki) =>
+      wiki.deleteNode(slug, {
         danglingRefs: safeEnum(opts.danglingRefs as string | undefined, "--dangling-refs", ["strikethrough", "plain-text", "remove"] as const) ?? "strikethrough",
         dryRun: !!opts.dryRun,
-      })
-      output(result, jsonFlag())
-    } catch (e) {
-      handleError(e, jsonFlag())
-    }
+      }),
+    )
   })
 
 program
-  .command("add-edge <wikiRoot> <source> <target>")
+  .command("add-edge <source> <target>")
   .description("Ensure an edge exists in both carriers (idempotent)")
   .option("--context <heading>", "section heading for wikilink insertion")
   .option("--dry-run", "preview without writing")
-  .action(async (wikiRoot: string, source: string, target: string, opts: Record<string, unknown>) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    try {
-      const result = await wiki.addEdge(source, target, {
+  .action(async (source: string, target: string, opts: Record<string, unknown>) => {
+    await withWiki((wiki) =>
+      wiki.addEdge(source, target, {
         context: opts.context as string | undefined,
         dryRun: !!opts.dryRun,
-      })
-      output(result, jsonFlag())
-    } catch (e) {
-      handleError(e, jsonFlag())
-    }
+      }),
+    )
   })
 
 program
-  .command("remove-edge <wikiRoot> <source> <target>")
+  .command("remove-edge <source> <target>")
   .description("Remove an edge from both carriers (idempotent)")
   .option("--dry-run", "preview without writing")
-  .action(async (wikiRoot: string, source: string, target: string, opts: Record<string, unknown>) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    try {
-      const result = await wiki.removeEdge(source, target, { dryRun: !!opts.dryRun })
-      output(result, jsonFlag())
-    } catch (e) {
-      handleError(e, jsonFlag())
-    }
+  .action(async (source: string, target: string, opts: Record<string, unknown>) => {
+    await withWiki((wiki) =>
+      wiki.removeEdge(source, target, { dryRun: !!opts.dryRun }),
+    )
   })
 
 program
-  .command("rebuild-index <wikiRoot>")
+  .command("rebuild-index")
   .description("Full rebuild of index.md (preserves custom sections)")
-  .action(async (wikiRoot: string) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    const result = await wiki.rebuildIndex()
-    output(result, jsonFlag())
+  .action(async () => {
+    await withWiki((wiki) => wiki.rebuildIndex())
   })
 
 program
-  .command("metrics <wikiRoot>")
+  .command("metrics")
   .description("Compute graph metrics: topology, source overlap, type edges, type balance")
-  .action(async (wikiRoot: string) => {
-    const wiki = makeWiki(wikiRoot, program.opts())
-    await wiki.validate()
-    await wiki.cleanup()
-    const result = await wiki.getMetrics()
-    output(result, jsonFlag())
+  .action(async () => {
+    await withWiki((wiki) => wiki.getMetrics())
   })
 
 program.parse()

@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — filesystem helpers.
+ * llm-wiki-ops — filesystem helpers.
  *
  * Design doc: §8.4 (write-to-temp + rename), §7.2 (platform notes)
  *

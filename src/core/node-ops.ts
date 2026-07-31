@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — node operations (add / update / rename / delete).
+ * llm-wiki-ops — node operations (add / update / rename / delete).
  *
  * Design doc: §6.3
  *
@@ -9,7 +9,7 @@
 
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
-import { parseFrontmatter, serializeFrontmatter } from "../io/frontmatter.js"
+import { parseFrontmatter } from "../io/frontmatter.js"
 import { extractWikilinkSlugs, replaceWikilinks, danglingWikilink, removeWikilinks } from "../io/wikilink.js"
 import { readFileClean, writeFileAtomic, deleteFileIfExists, fileExists, findMarkdownFiles } from "../io/fs-helpers.js"
 import { titleToSlug, normalizeSlug, slugStartsWithDigit } from "../utils/slug.js"
@@ -21,6 +21,7 @@ import {
   rebuildIndexPreservingCustom,
 } from "./index-maintainer.js"
 import { scanWiki } from "./graph-builder.js"
+import { today, composePage, baseMutation, findPageBySlug } from "./helpers.js"
 import { WikiGraphError, InvalidSlugError } from "../utils/errors.js"
 import {
   type AddNodeInput,
@@ -34,44 +35,17 @@ import {
   type RebuildIndexResult,
   type PageType,
   type GraphNode,
-  type MutationResult,
   TYPE_DIR_MAP,
   INFRA_FILES,
 } from "../types.js"
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-
 /** Resolve the directory for a page type. */
 function typeDir(type: PageType): string {
   const known = TYPE_DIR_MAP[type as keyof typeof TYPE_DIR_MAP]
   if (known !== undefined) return known
   return type // unknown types: wiki/<type>/
-}
-
-/** Find a file by slug across all subdirectories. Returns absPath or null. */
-async function findPageBySlug(wikiDir: string, slug: string): Promise<string | null> {
-  const norm = normalizeSlug(slug)
-  const files = await findMarkdownFiles(wikiDir)
-  const matches: string[] = []
-  for (const f of files) {
-    if (INFRA_FILES.has(path.basename(f))) continue
-    if (normalizeSlug(path.basename(f, ".md")) === norm) matches.push(f)
-  }
-  if (matches.length > 1) {
-    throw new WikiGraphError("AMBIGUOUS_SLUG", `Slug "${slug}" matches ${matches.length} files`, {
-      detail: matches.map((m) => path.relative(wikiDir, m).replace(/\\/g, "/")).join(", "),
-    })
-  }
-  return matches[0] ?? null
-}
-
-/** Build frontmatter + body into a full page string. */
-function composePage(fm: Record<string, unknown>, body: string): string {
-  return `${serializeFrontmatter(fm)}\n${body}`
 }
 
 /** Parse a page file into frontmatter record + body. */
@@ -83,10 +57,6 @@ async function parsePage(absPath: string): Promise<{
   const { content } = await readFileClean(absPath)
   const { frontmatter, body, rawBlock } = parseFrontmatter(content)
   return { fm: (frontmatter as Record<string, unknown>) ?? {}, body, rawBlock }
-}
-
-function baseMutation(wikiRoot: string, dryRun: boolean): MutationResult {
-  return { filesTouched: [], indexUpdated: false, wikiRootUsed: wikiRoot, dryRun }
 }
 
 // ── addNode ─────────────────────────────────────────────────────────
@@ -324,7 +294,7 @@ export async function updateNode(
   }
 
   if (patch.content !== undefined) {
-    newBody = `\n# ${fm.title}\n\n${patch.content}\n`
+    newBody = `# ${fm.title}\n\n${patch.content}\n`
     result.fieldsChanged.push("content")
   }
 

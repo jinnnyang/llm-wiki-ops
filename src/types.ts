@@ -1,7 +1,7 @@
 /**
- * wiki-graph-ops — shared type definitions.
+ * llm-wiki-ops — shared type definitions.
  *
- * Design doc: docs/design/wiki-graph-ops.md §5, §6
+ * Design doc: docs/design/llm-wiki-ops.md §5, §6
  */
 
 // ── Page types ──────────────────────────────────────────────────────

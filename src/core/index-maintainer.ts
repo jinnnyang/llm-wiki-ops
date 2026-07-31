@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — index.md maintenance.
+ * llm-wiki-ops — index.md maintenance.
  *
  * Design doc: §9, §6.6
  *

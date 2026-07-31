@@ -1,5 +1,5 @@
 /**
- * wiki-graph-ops — slug generation.
+ * llm-wiki-ops — slug generation.
  *
  * Design doc: §7
  *

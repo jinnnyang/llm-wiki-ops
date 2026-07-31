@@ -18,7 +18,7 @@ export interface FixtureWiki {
  * dirty frontmatter data, NFKC edge cases, and a self-loop.
  */
 export async function createFixtureWiki(): Promise<FixtureWiki> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wiki-graph-test-"))
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "llm-wiki-test-"))
   const wikiDir = path.join(root, "wiki")
 
   // Create directories
