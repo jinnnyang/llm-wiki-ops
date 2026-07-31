@@ -1,6 +1,6 @@
 # llm-wiki-ops 高级智能体层设计方案
 
-> 状态：待评审（v3，MCP 规范升级至 2026-07-28 + 专家评审意见）
+> 状态：待评审（v4，第二轮专家评审修正）
 > 日期：2026-07-31
 
 ## 1. 背景与动机
@@ -141,6 +141,8 @@ prompt → LLM → tool_calls? ──yes──→ execute tools → append resul
 | wall clock 超时 | 10 min | 整个 agent 运行时间上限 |
 | abort() | — | 外部中断（CLI 层捕获 SIGINT 后调用） |
 
+**LLM 返回非法 JSON arguments 的处理**：`ToolCall.function.arguments` 是 string，需要 `JSON.parse`。LLM 经常返回截断的 JSON、多余逗号、注释。parse 失败 → 构造一条 `role: "tool"` 的错误消息（`"Invalid JSON in tool arguments: ..."`）回传给 LLM 让它重试。这算一次 tool 调用失败，计入连续错误熔断计数。
+
 **返回结构**：
 
 ```typescript
@@ -190,14 +192,20 @@ async function runAgent(
 
 1. **Tool result 截断**：单个 tool result 超过 **8KB** 时截断，尾部标注 `[truncated, N chars omitted]`。截断方向：读类工具保留头部（文件开头、列表前部），写类工具保留尾部（操作结果、错误信息）。
 
-2. **滑动窗口**：总 messages 字符数超过模型 context 的 **70%** 时（按 4 chars ≈ 1 token 估算），保留 system prompt + 最近 **10 轮**对话，中间轮次压缩为一条摘要消息：
+2. **锚定消息**：以下消息**永远保留在窗口内**，不参与压缩：
+   - `userMessage`（任务指令 + 源文档路径/内容引用）
+   - `read_file` / `wiki.get_node` 的结果，如果被后续 tool call 的 args 引用过（如 slug 出现在 `add_node` 参数中），保留前 **2KB** 而非只记操作名
+
+   这确保 ingest 第 1 轮读入的论文内容在第 20 轮仍可引用，research/check 早期读入的节点内容不会丢失。
+
+3. **滑动窗口**：总 messages 字符数超过模型 context 的 **70%** 时（按 4 chars ≈ 1 token 估算），保留 system prompt + 锚定消息 + 最近 **10 轮**对话，中间轮次压缩为一条摘要消息：
    ```
    [Summary of iterations 1-N: created 3 nodes (slug-a, slug-b, slug-c),
    added 5 edges, updated node slug-d. No errors.]
    ```
    摘要由 loop 代码模板生成（不调 LLM），只提取 toolCalls 日志中的操作名 + 关键参数 + 成功/失败。
 
-3. **不做精确 token 计算**：不同模型 tokenizer 不同，字符数估算足够。
+4. **不做精确 token 计算**：不同模型 tokenizer 不同，字符数估算足够。
 
 #### 4.2.2 多步操作的事务限制
 
@@ -221,6 +229,8 @@ Agent 通过 MCP 顺序调用 `add_node` → `add_edge` → `update_node`。如�
 不做 legacy SSE（2024-11-05 的 HTTP+SSE 已废弃）。
 
 **连接模型**：stdio spawn 一次，保持长连接。不是每次 tool call 都 spawn。
+
+**stdio 子进程崩溃处理**：监听子进程 `exit` 事件 → 立即标记该 server 为 `SERVER_DEAD` → 后续 `callTool` 直接抛 `SERVER_DEAD` 错误（不等超时）。loop 层拿到 `SERVER_DEAD` 直接终止 agent，不走 3 次熔断（进程已死，重试无意义）。
 
 #### 4.3.1 目标规范与版本兼容
 
@@ -316,7 +326,7 @@ v1 只提供文件系统工具，**不提供 `run_shell`**（五个高级 agent 
 |------|------|
 | `read_file` | 读文件（带行号、分页、自动截断） |
 | `write_file` | 写文件（覆盖） |
-| `edit_file` | 精确查找替换编辑（支持模糊匹配） |
+| `edit_file` | 精确查找替换编辑（仅缩进/空白容差，不做 Unicode 模糊） |
 | `list_directory` | 列目录 |
 
 **安全约束**：
@@ -340,7 +350,7 @@ v1 只提供文件系统工具，**不提供 `run_shell`**（五个高级 agent 
 #### ingest.ts
 
 - **输入**：文档路径（**MD/TXT/HTML**）+ wiki root。PDF 需调用方预处理为文本。
-- **tool 集**：`wiki.get_stats`、`wiki.add_node`、`wiki.add_edge`、`wiki.get_node`、`wiki.read_graph`、`wiki.rename_node`、`wiki.rebuild_index` + 本地文件工具
+- **tool 集**：`wiki.get_stats`、`wiki.add_node`、`wiki.add_edge`、`wiki.get_node`、`wiki.read_graph`、`wiki.rename_node` + 本地文件工具
 - **行为**：读文档 → 提取结构 → 决定建哪些节点（类型、slug、关联）→ 写入 wiki
 - **不包含**：`wiki.delete_node`（ingest 不删东西）
 
@@ -354,24 +364,23 @@ v1 只提供文件系统工具，**不提供 `run_shell`**（五个高级 agent 
 #### purge.ts
 
 - **输入**：目标 + wiki root
-- **tool 集**：`wiki.get_stats`、`wiki.read_graph`、`wiki.get_node`、`wiki.delete_node`、`wiki.remove_edge`
-- **行为**：识别过期/错误内容 → 删除 → 清理引用
-- **不包含**：`wiki.add_node`（purge 不建东西）
+- **tool 集**（仅内容判断模式）：`wiki.get_stats`、`wiki.read_graph`、`wiki.get_node`、`wiki.delete_node`
+- **不包含**：`wiki.add_node`（purge 不建东西）、`wiki.remove_edge`（`delete_node` 已自动清理所有引用）
 
-**三种触发模式**：
+**执行分叉**：
 
-| 模式 | CLI 参数 | 是否需要 LLM |
-|------|----------|-------------|
-| 日期阈值 | `--stale-before 2025-01-01`（按 `updated` 字段） | 不需要 |
-| 内容判断 | `--query "..."` + 搜索 MCP 验证是否过时 | 需要 |
-| 精确指定 | `--slugs a,b,c` 直接删 | 不需要 |
+| 模式 | CLI 参数 | 执行路径 |
+|------|----------|---------|
+| 日期阈值 | `--stale-before 2025-01-01` | **纯代码**：CLI 层遍历节点 → 按 `updated` 过滤 → 批量 `delete_node`。不启动 LLM。 |
+| 精确指定 | `--slugs a,b,c` | **纯代码**：直接调 `delete_node`。不启动 LLM。 |
+| 内容判断 | `--query "..."` | **Agent loop**：LLM 读内容 + 搜索 MCP 验证是否过时 → 决定删什么。 |
 
 > 注：`updated` 日期只代表最后修改时间，不代表内容过时。日期阈值是机械规则，内容判断才需要 LLM + 搜索验证。
 
 #### check.ts
 
 - **输入**：查询（子图范围）+ wiki root + 搜索 MCP server
-- **tool 集**：`wiki.get_stats`、`wiki.read_graph`、`wiki.get_node`、`wiki.get_edges`、`wiki.delete_node`、`wiki.remove_edge`、`wiki.update_node`、`wiki.add_node`、`wiki.add_edge` + 搜索 MCP tools
+- **tool 集**：`wiki.get_stats`、`wiki.read_graph`、`wiki.get_node`、`wiki.get_edges`、`wiki.delete_node`、`wiki.update_node`、`wiki.add_node`、`wiki.add_edge` + 搜索 MCP tools
 - **行为**：独立 loop。核验子图每条内容 → 不属实则 purge → 属实但不确定则 research 补充
 - **设计决策**：check 是独立 agent loop，不是代码编排。因为"属实但不确定"和"不属实"之间的界限是模糊的，LLM 比 if/else 判断得好。
 
@@ -433,11 +442,28 @@ llm-wiki reason --center "transformer" --depth 3 --apply --wiki ./my-wiki
 | 选项 | 说明 |
 |------|------|
 | `--wiki <path>` | wiki 根目录 |
-| `--json` | JSON 输出（AgentResult 结构） |
+| `--json` | JSON 输出（默认省略 `messages` 数组，只含 `status`/`toolCalls`/`finalMessage`；`--full-transcript` 输出完整 messages） |
 | `--max-iterations <n>` | 覆盖默认 30 |
 | `--timeout <minutes>` | 覆盖默认 10 |
 | `--mcp-config <path>` | 外部 MCP server 配置文件（JSON） |
 | `--verbose` | 打印每轮 tool 调用日志到 stderr |
+| `--full-transcript` | 配合 `--json`，输出完整 messages 数组 |
+
+### 各命令专有选项
+
+| 命令 | 专有选项 | 说明 |
+|------|---------|------|
+| `ingest` | `<file>` | 输入文档路径（MD/TXT/HTML） |
+| `research` | `<query>` | 自然语言查询 |
+| `purge` | `--stale-before <date>` | 按 `updated` 日期阈值删除（纯代码，不走 LLM） |
+| `purge` | `--slugs <a,b,c>` | 精确指定 slug 删除（纯代码，不走 LLM） |
+| `purge` | `--query <text>` | 内容判断模式（启动 agent loop） |
+| `check` | `--center <slug>` | 子图中心节点 |
+| `check` | `--depth <n>` | 子图深度（默认 2） |
+| `reason` | `--center <slug>` | 子图中心节点 |
+| `reason` | `--depth <n>` | 子图深度（默认 3） |
+| `reason` | `--report` | 报告模式（默认，只读） |
+| `reason` | `--apply` | 应用模式（写入图） |
 
 ## 6. MCP server 配置
 
@@ -528,3 +554,17 @@ wiki-graph-mcp 不需要配置——agent 启动时自动连接，wiki root 从 
 | 12 | `get_datetime` 价值存疑 | ✅ 砍掉，当前时间写进 system prompt |
 | 13 | MCP 客户端工作量被低估 | ✅ 目标升级为 spec 2026-07-28（无状态核心），兼容 ≤2025-11-25 fallback；明确方法子集 + 缓存 |
 | 14 | 缺 `rename_node` | ✅ ingest 和 research 的 tool 集加入 |
+
+## 附录 B：第二轮专家评审意见处理记录
+
+| # | 级别 | 意见 | 处理 |
+|---|------|------|------|
+| 1 | 🔴 | purge "不需要 LLM" 模式与 agent loop 矛盾 | ✅ 执行分叉：日期阈值/精确 slug 走纯代码（CLI 层直接调 `delete_node`），仅内容判断模式启动 agent loop |
+| 2 | 🔴 | 滑动窗口丢失源文档内容 | ✅ 引入锚定消息：`userMessage` 永远保留；被后续操作引用的 `read_file`/`get_node` 结果保留前 2KB |
+| 3 | 🟡 | MCP server 进程崩溃无处理 | ✅ stdio 子进程 exit → 标记 `SERVER_DEAD` → `callTool` 直接抛错 → loop 立即终止 |
+| 4 | 🟡 | LLM 返回非法 JSON arguments | ✅ parse 失败 → 构造 tool 错误消息回传 LLM 重试，计入熔断计数 |
+| 5 | 🟡 | `--json` 输出 messages 太大 | ✅ 默认省略 messages，`--full-transcript` 才输出完整 |
+| 6 | 🟡 | 命令专有选项未集中列出 | ✅ §5 新增"各命令专有选项"表 |
+| 7 | 🟡 | `edit_file` 模糊匹配风险 | ✅ v1 只做精确匹配 + 缩进/空白容差，不做 Unicode 模糊 |
+| 8 | 🟢 | `rebuild_index` 一致性 | ✅ 从 ingest 删除（`addNode` 内部自动 `maintainIndex`） |
+| 9 | 🟢 | purge 的 `remove_edge` 多余 | ✅ 从 purge 和 check 删除（`delete_node` 已自动清边） |
