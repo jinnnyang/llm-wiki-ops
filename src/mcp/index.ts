@@ -238,6 +238,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         additionalProperties: false,
       },
     },
+    {
+      name: "metrics",
+      description:
+        "Compute graph health metrics: topology (degree distribution, hubs, connected components, fragmentation), source overlap (near-duplicate detection), cross-type edge matrix, and type balance. Read-only full scan. Use after get_stats to diagnose structural problems before bulk operations.",
+      inputSchema: {
+        type: "object",
+        properties: { wiki_root: wikiRootProp },
+        additionalProperties: false,
+      },
+    },
   ],
 }))
 
@@ -340,6 +350,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         result = await wiki.rebuildIndex()
         break
 
+      case "metrics":
+        result = await wiki.getMetrics()
+        break
+
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true }
     }
@@ -377,8 +391,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ── Startup ─────────────────────────────────────────────────────────
 
 async function main() {
-  // MCP server.init(): auto cleanup once (§16 decision)
+  // MCP server.init(): validate + auto cleanup once (§16 decision)
   const wiki = getWiki()
+  await wiki.validate()
   await wiki.cleanup()
 
   const transport = new StdioServerTransport()

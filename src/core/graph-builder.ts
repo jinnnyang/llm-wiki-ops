@@ -143,7 +143,7 @@ function toStringArray(v: unknown): string[] {
 
 // ── Build graph ─────────────────────────────────────────────────────
 
-function buildGraphFromPages(pages: ScannedPage[]): Graph {
+export function buildGraphFromPages(pages: ScannedPage[]): Graph {
   const slugSet = new Set(pages.map((p) => p.slug))
   const edgeMap = new Map<string, GraphEdge>()
 

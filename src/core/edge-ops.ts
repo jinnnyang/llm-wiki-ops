@@ -46,11 +46,17 @@ function baseMutation(wikiRoot: string, dryRun: boolean): MutationResult {
 async function findPageBySlug(wikiDir: string, slug: string): Promise<string | null> {
   const norm = normalizeSlug(slug)
   const files = await findMarkdownFiles(wikiDir)
+  const matches: string[] = []
   for (const f of files) {
     if (INFRA_FILES.has(path.basename(f))) continue
-    if (normalizeSlug(path.basename(f, ".md")) === norm) return f
+    if (normalizeSlug(path.basename(f, ".md")) === norm) matches.push(f)
   }
-  return null
+  if (matches.length > 1) {
+    throw new WikiGraphError("AMBIGUOUS_SLUG", `Slug "${slug}" matches ${matches.length} files`, {
+      detail: matches.map((m) => path.relative(wikiDir, m).replace(/\\/g, "/")).join(", "),
+    })
+  }
+  return matches[0] ?? null
 }
 
 /** Check if frontmatter related[] contains a slug. */

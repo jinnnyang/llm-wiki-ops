@@ -33,11 +33,12 @@ import {
   type RemoveEdgeResult,
   type CleanupResult,
 } from "./types.js"
-import { readGraph, getNode, getEdges, getStats } from "./core/graph-builder.js"
+import { readGraph, getNode, getEdges, getStats, scanWiki, buildGraphFromPages } from "./core/graph-builder.js"
 import { addNode, updateNode, renameNode, deleteNode, rebuildIndex } from "./core/node-ops.js"
 import { addEdge, removeEdge } from "./core/edge-ops.js"
 import { findTmpFiles, deleteFileIfExists } from "./io/fs-helpers.js"
 import { WikiGraphError } from "./utils/errors.js"
+import { computeMetrics, type GraphMetrics } from "./metrics/index.js"
 
 export class WikiGraph {
   readonly wikiRoot: string
@@ -72,6 +73,16 @@ export class WikiGraph {
 
   async getStats(): Promise<WikiStats> {
     return getStats(this.wikiDir, this.wikiRoot)
+  }
+
+  /**
+   * Compute all graph metrics (topology, source overlap, type edges, type balance).
+   * Full wiki scan — read-only, no mutations.
+   */
+  async getMetrics(): Promise<GraphMetrics> {
+    const pages = await scanWiki(this.wikiDir, this.wikiRoot)
+    const graph = buildGraphFromPages(pages)
+    return computeMetrics(graph)
   }
 
   // ── Node operations ─────────────────────────────────────────────
@@ -175,3 +186,15 @@ export {
   replaceWikilinks,
   danglingWikilink,
 } from "./io/wikilink.js"
+export {
+  computeMetrics,
+  computeTopology,
+  computeSourceOverlap,
+  computeTypeEdges,
+  computeTypeBalance,
+  type GraphMetrics,
+  type TopologyMetrics,
+  type SourceOverlapMetrics,
+  type TypeEdgeMetrics,
+  type TypeBalanceMetrics,
+} from "./metrics/index.js"

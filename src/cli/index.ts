@@ -342,4 +342,15 @@ program
     output(result, jsonFlag())
   })
 
+program
+  .command("metrics <wikiRoot>")
+  .description("Compute graph metrics: topology, source overlap, type edges, type balance")
+  .action(async (wikiRoot: string) => {
+    const wiki = makeWiki(wikiRoot, program.opts())
+    await wiki.validate()
+    await wiki.cleanup()
+    const result = await wiki.getMetrics()
+    output(result, jsonFlag())
+  })
+
 program.parse()

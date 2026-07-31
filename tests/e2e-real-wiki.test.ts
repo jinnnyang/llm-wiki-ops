@@ -14,9 +14,13 @@ import { WikiGraph } from "../src/index.js"
 import { readGraph, getStats } from "../src/core/graph-builder.js"
 import { WikiGraphError, ResultTooLargeError, ExternalModificationError } from "../src/utils/errors.js"
 
-const SOURCE_WIKI = "C:\\Users\\jinnn\\Documents\\wiki-builder\\wikis\\economic-analysis"
+const SOURCE_WIKI = process.env.WIKI_E2E_SOURCE ?? "C:\\Users\\jinnn\\Documents\\wiki-builder\\wikis\\economic-analysis"
 const WIKI_ROOT = process.env.WIKI_E2E_ROOT ?? "C:\\Users\\jinnn\\AppData\\Local\\Temp\\wiki-graph-e2e-test"
 const WIKI_DIR = path.join(WIKI_ROOT, "wiki")
+
+/** Skip the entire suite when the source wiki isn't available (CI, other machines). */
+const sourceExists = await fs.access(SOURCE_WIKI).then(() => true, () => false)
+const describeE2E = sourceExists ? describe : describe.skip
 
 let wiki: WikiGraph
 
@@ -33,7 +37,7 @@ afterAll(async () => {
 
 // ── 1. cleanup (frontmatter repair) ─────────────────────────────────
 
-describe("cleanup", () => {
+describeE2E("cleanup", () => {
   it("runs without error on 1149-page wiki", async () => {
     const result = await wiki.cleanup()
     expect(Array.isArray(result.removedFiles)).toBe(true)
@@ -43,7 +47,7 @@ describe("cleanup", () => {
 
 // ── 2. getStats ─────────────────────────────────────────────────────
 
-describe("getStats", () => {
+describeE2E("getStats", () => {
   it("returns valid stats for 1149 pages", async () => {
     const stats = await getStats(WIKI_DIR, WIKI_ROOT)
     expect(stats.totalNodes).toBeGreaterThanOrEqual(1000)
@@ -68,7 +72,7 @@ describe("getStats", () => {
 
 // ── 3. readGraph ────────────────────────────────────────────────────
 
-describe("readGraph", () => {
+describeE2E("readGraph", () => {
   it("unfiltered scan throws RESULT_TOO_LARGE (safety valve)", async () => {
     await expect(readGraph(WIKI_DIR, WIKI_ROOT)).rejects.toThrow(ResultTooLargeError)
   })
@@ -143,7 +147,7 @@ describe("readGraph", () => {
 
 // ── 4. getNode ──────────────────────────────────────────────────────
 
-describe("getNode", () => {
+describeE2E("getNode", () => {
   it("returns full detail for a known page", async () => {
     // Use getStats to discover a slug (not readGraph)
     const stats = await getStats(WIKI_DIR, WIKI_ROOT)
@@ -165,7 +169,7 @@ describe("getNode", () => {
 
 // ── 5. getEdges ─────────────────────────────────────────────────────
 
-describe("getEdges", () => {
+describeE2E("getEdges", () => {
   it("returns inbound+outbound for k=1", async () => {
     const stats = await getStats(WIKI_DIR, WIKI_ROOT)
     // Pick a node with moderate degree (not the biggest hub)
@@ -211,7 +215,7 @@ describe("getEdges", () => {
 
 // ── 6. addNode ──────────────────────────────────────────────────────
 
-describe("addNode", () => {
+describeE2E("addNode", () => {
   it("creates a new page", async () => {
     const result = await wiki.addNode({
       title: "E2E 测试页面",
@@ -276,7 +280,7 @@ describe("addNode", () => {
 
 // ── 7. updateNode ───────────────────────────────────────────────────
 
-describe("updateNode", () => {
+describeE2E("updateNode", () => {
   it("updates title", async () => {
     const created = await wiki.addNode({ title: "E2E 更新测试", type: "concept" })
 
@@ -321,7 +325,7 @@ describe("updateNode", () => {
 
 // ── 8. renameNode ───────────────────────────────────────────────────
 
-describe("renameNode", () => {
+describeE2E("renameNode", () => {
   it("renames and cascades references", async () => {
     const target = await wiki.addNode({ title: "E2E 重命名目标", type: "concept" })
     const source = await wiki.addNode({
@@ -367,7 +371,7 @@ describe("renameNode", () => {
 
 // ── 9. deleteNode ───────────────────────────────────────────────────
 
-describe("deleteNode", () => {
+describeE2E("deleteNode", () => {
   it("deletes and cleans references (strikethrough)", async () => {
     const target = await wiki.addNode({ title: "E2E 删除目标", type: "concept" })
     const source = await wiki.addNode({
@@ -417,7 +421,7 @@ describe("deleteNode", () => {
 
 // ── 10. addEdge / removeEdge ────────────────────────────────────────
 
-describe("addEdge / removeEdge", () => {
+describeE2E("addEdge / removeEdge", () => {
   it("creates edge in both carriers", async () => {
     const a = await wiki.addNode({ title: "E2E Edge A", type: "concept" })
     const b = await wiki.addNode({ title: "E2E Edge B", type: "concept" })
@@ -484,7 +488,7 @@ describe("addEdge / removeEdge", () => {
 
 // ── 11. rebuildIndex ────────────────────────────────────────────────
 
-describe("rebuildIndex", () => {
+describeE2E("rebuildIndex", () => {
   it("rebuilds index with 1000+ entries", async () => {
     const result = await wiki.rebuildIndex()
 
@@ -503,7 +507,7 @@ describe("rebuildIndex", () => {
 
 // ── 12. Concurrency ─────────────────────────────────────────────────
 
-describe("concurrency", () => {
+describeE2E("concurrency", () => {
   it("concurrent writes: one succeeds, one gets conflict (optimistic check)", async () => {
     const a = await wiki.addNode({ title: "E2E Lock A", type: "concept" })
 

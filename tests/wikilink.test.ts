@@ -110,6 +110,13 @@ describe("removeWikilinks", () => {
     const result = removeWikilinks(content, "nvidia")
     expect(result).toContain("```\n[[nvidia]]\n```")
   })
+
+  it("preserves inline code wikilinks", () => {
+    const content = "Use `[[nvidia]]` in code but [[nvidia]] in text."
+    const result = removeWikilinks(content, "nvidia")
+    expect(result).toContain("`[[nvidia]]`")
+    expect(result).not.toContain("]] in text")
+  })
 })
 
 describe("replaceWikilinks", () => {
@@ -125,6 +132,20 @@ describe("replaceWikilinks", () => {
     const content = "[[old-slug|Display Name]]"
     const result = replaceWikilinks(content, "old-slug", "new-slug")
     expect(result).toBe("[[new-slug|Display Name]]")
+  })
+
+  it("skips fenced code blocks", () => {
+    const content = "```\n[[old-slug]]\n```\n[[old-slug]]"
+    const result = replaceWikilinks(content, "old-slug", "new-slug")
+    expect(result).toContain("```\n[[old-slug]]\n```")
+    expect(result).toContain("[[new-slug]]")
+  })
+
+  it("skips inline code spans", () => {
+    const content = "Use `[[old-slug]]` in code but [[old-slug]] in text."
+    const result = replaceWikilinks(content, "old-slug", "new-slug")
+    expect(result).toContain("`[[old-slug]]`")
+    expect(result).toContain("[[new-slug]] in text")
   })
 })
 
@@ -148,5 +169,12 @@ describe("danglingWikilink", () => {
     const result = danglingWikilink(content, "nvidia", "英伟达", "remove")
     expect(result).not.toContain("nvidia")
     expect(result).toContain("[[hbm]]")
+  })
+
+  it("preserves inline code wikilinks", () => {
+    const content = "Use `[[nvidia]]` in code but [[nvidia]] in text."
+    const result = danglingWikilink(content, "nvidia", "英伟达", "strikethrough")
+    expect(result).toContain("`[[nvidia]]`")
+    expect(result).toContain("~~英伟达~~")
   })
 })

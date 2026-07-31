@@ -146,11 +146,39 @@ function insertAtSectionEnd(content: string, heading: string, entry: string): st
   return result.join("\n")
 }
 
+// ── Code-region masking ─────────────────────────────────────────────
+
+/**
+ * Mask inline code spans (`…`) in a single line with \x00 placeholders.
+ * Returns the masked line and a restore function.
+ * Used by write operations to avoid transforming wikilinks inside code.
+ */
+function maskInlineCode(line: string): { masked: string; restore: (s: string) => string } {
+  const spans: string[] = []
+  let i = 0
+  const masked = line.replace(/`[^`]*`/g, (match) => {
+    const ph = `\x00IC${i++}\x00`
+    spans.push(match)
+    return ph
+  })
+  return {
+    masked,
+    restore: (s: string) => {
+      let result = s
+      for (let j = 0; j < spans.length; j++) {
+        result = result.replace(`\x00IC${j}\x00`, spans[j])
+      }
+      return result
+    },
+  }
+}
+
 // ── Removal ─────────────────────────────────────────────────────────
 
 /**
  * Remove all [[wikilink]] references to `slug` from content.
  * Handles both [[slug]] and [[slug|alias]] forms.
+ * Skips fenced code blocks and inline code spans.
  * Returns modified content.
  */
 export function removeWikilinks(content: string, slug: string): string {
@@ -170,17 +198,20 @@ export function removeWikilinks(content: string, slug: string): string {
       continue
     }
 
+    // Mask inline code so wikilinks inside `…` are preserved
+    const { masked, restore } = maskInlineCode(line)
+
     // Remove list items that are solely a wikilink to this slug
-    const listItemMatch = line.match(/^(\s*-\s+)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]\s*$/)
+    const listItemMatch = masked.match(/^(\s*-\s+)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]\s*$/)
     if (listItemMatch && normalizeSlug(listItemMatch[2].trim()) === norm) {
       continue // drop the entire line
     }
 
     // Remove inline wikilinks (replace with empty)
-    const cleaned = line.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, (match, target) => {
+    const cleaned = masked.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, (match, target) => {
       return normalizeSlug(target.trim()) === norm ? "" : match
     })
-    result.push(cleaned)
+    result.push(restore(cleaned))
   }
 
   return result.join("\n")
@@ -191,19 +222,41 @@ export function removeWikilinks(content: string, slug: string): string {
 /**
  * Replace all [[oldSlug]] references with [[newSlug]] in content.
  * Handles both [[slug]] and [[slug|alias]] forms (alias preserved).
+ * Skips fenced code blocks and inline code spans.
  */
 export function replaceWikilinks(content: string, oldSlug: string, newSlug: string): string {
   const oldNorm = normalizeSlug(oldSlug)
-  return content.replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, (match, target, alias) => {
-    if (normalizeSlug(target.trim()) === oldNorm) {
-      return alias ? `[[${newSlug}${alias}]]` : `[[${newSlug}]]`
+  const lines = content.split("\n")
+  let inFencedCode = false
+  const result: string[] = []
+
+  for (const line of lines) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFencedCode = !inFencedCode
+      result.push(line)
+      continue
     }
-    return match
-  })
+    if (inFencedCode) {
+      result.push(line)
+      continue
+    }
+
+    const { masked, restore } = maskInlineCode(line)
+    const replaced = masked.replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, (match, target, alias) => {
+      if (normalizeSlug(target.trim()) === oldNorm) {
+        return alias ? `[[${newSlug}${alias}]]` : `[[${newSlug}]]`
+      }
+      return match
+    })
+    result.push(restore(replaced))
+  }
+
+  return result.join("\n")
 }
 
 /**
  * Replace [[slug]] with a dangling-ref treatment.
+ * Skips fenced code blocks and inline code spans.
  * Design doc: §6.3 DanglingRefMode
  */
 export function danglingWikilink(
@@ -228,8 +281,11 @@ export function danglingWikilink(
       continue
     }
 
+    // Mask inline code so wikilinks inside `…` are preserved
+    const { masked, restore } = maskInlineCode(line)
+
     // List items that are solely a wikilink → remove entirely for all modes
-    const listItemMatch = line.match(/^(\s*-\s+)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]\s*$/)
+    const listItemMatch = masked.match(/^(\s*-\s+)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]\s*$/)
     if (listItemMatch && normalizeSlug(listItemMatch[2].trim()) === norm) {
       if (mode === "remove") continue
       // strikethrough / plain-text: replace the wikilink but keep the list item
@@ -239,7 +295,7 @@ export function danglingWikilink(
     }
 
     // Inline replacement
-    const cleaned = line.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, (match, target) => {
+    const cleaned = masked.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, (match, target) => {
       if (normalizeSlug(target.trim()) !== norm) return match
       switch (mode) {
         case "strikethrough":
@@ -250,7 +306,7 @@ export function danglingWikilink(
           return ""
       }
     })
-    result.push(cleaned)
+    result.push(restore(cleaned))
   }
 
   return result.join("\n")

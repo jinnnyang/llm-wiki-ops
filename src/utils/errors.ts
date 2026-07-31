@@ -10,6 +10,7 @@ export type ErrorCode =
   | "NODE_ALREADY_EXISTS"
   | "RENAME_TARGET_EXISTS"
   | "INVALID_SLUG"
+  | "AMBIGUOUS_SLUG"
   // query
   | "RESULT_TOO_LARGE"
   // concurrency / transaction
