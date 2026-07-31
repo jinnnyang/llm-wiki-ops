@@ -1,6 +1,6 @@
 # llm-wiki-ops 高级智能体层设计方案
 
-> 状态：待评审（v4，第二轮专家评审修正）
+> 状态：待评审（v5，第三轮专家评审修正）
 > 日期：2026-07-31
 
 ## 1. 背景与动机
@@ -194,9 +194,11 @@ async function runAgent(
 
 2. **锚定消息**：以下消息**永远保留在窗口内**，不参与压缩：
    - `userMessage`（任务指令 + 源文档路径/内容引用）
-   - `read_file` / `wiki.get_node` 的结果，如果被后续 tool call 的 args 引用过（如 slug 出现在 `add_node` 参数中），保留前 **2KB** 而非只记操作名
+   - `read_file` / `wiki.get_node` 的结果，**当且仅当**后续 tool call 的 args 中出现了与该结果的标识符完全相同的字符串时视为"被引用"：`get_node` 的标识符是其 `slug` 参数，`read_file` 的标识符是其 `path` 参数。实现为 Set 查找，不做内容级/语义级匹配。被引用的结果保留前 **2KB**。
 
    这确保 ingest 第 1 轮读入的论文内容在第 20 轮仍可引用，research/check 早期读入的节点内容不会丢失。
+
+   **溢出保护**：如果锚定消息 + userMessage + 最近 10 轮仍超过 70% 窗口，锚定消息的保留量从 2KB 降到 **512B**（只留标题/摘要行），而非无限保留。
 
 3. **滑动窗口**：总 messages 字符数超过模型 context 的 **70%** 时（按 4 chars ≈ 1 token 估算），保留 system prompt + 锚定消息 + 最近 **10 轮**对话，中间轮次压缩为一条摘要消息：
    ```
@@ -216,6 +218,7 @@ Agent 通过 MCP 顺序调用 `add_node` → `add_edge` → `update_node`。如�
 - 每个单独操作**已经是原子的**（低级层 transaction 模块保证）
 - `AgentResult.toolCalls` 数组是完整的操作日志——崩溃后调用方可据此判断做了什么、没做什么
 - 不在 MCP server 侧加 batch 端点（那是在低级层加高级语义，违反分层原则）
+- **不支持同一 wiki 上的并发 agent 运行**。`proper-lockfile` 保证单操作原子性，但两个 agent 交叉操作可能产生重复节点。并发安全由调用方保证。
 
 ### 4.3 agent/mcp.ts — MCP 客户端
 
@@ -253,7 +256,11 @@ Agent 通过 MCP 顺序调用 `add_node` → `add_edge` → `update_node`。如�
 connect(server):
   1. 发送 tools/list，请求带 _meta: { protocolVersion: "2026-07-28", clientInfo: {...} }
      + Streamable HTTP 时带 Mcp-Method / Mcp-Name / MCP-Protocol-Version header
-  2. 如果 server 返回错误（不认识 _meta / 要求 initialize）：
+  2. 如果 server 返回以下错误之一 → 触发 fallback：
+     - JSON-RPC error code -32600（Invalid Request）
+     - JSON-RPC error code -32601（Method not found）
+     - HTTP 400 且响应体包含 "initialize" 关键词
+     其他错误码 → 不 fallback，直接报错
      → fallback：发送 initialize 握手（protocolVersion: "2025-11-25"）
      → 等待 initialized 确认
      → 重新发送 tools/list（不带 _meta）
@@ -272,7 +279,9 @@ stdio 和 Streamable HTTP 共用同一套 fallback 逻辑。stdio 下 `_meta` �
 | `notifications/initialized` | 确认初始化 | ❌ 已废除 | ✅ fallback 时用 |
 | `server/discover` | 获取 server 能力 | 可选 | 不存在 |
 
-**不实现**：资源订阅（resources）、prompts、sampling、MRTR（v1 不需要 server 向 client 发起请求）、Extensions/MCP Apps/Tasks。
+**不实现**：资源订阅（resources）、prompts、sampling、Extensions/MCP Apps/Tasks。
+
+**MRTR 处理**：v1 不实现 MRTR（Multi Round-Trip Requests）。如果 2026-07-28 server 的 `tools/call` 返回 `resultType: "input_required"`，视为 tool 调用失败，错误消息 `"Server requested multi-round interaction (MRTR), not supported by this client"`，计入熔断计数。
 
 **`tools/list` 缓存**：server 返回 `ttlMs` 时，客户端在 TTL 内复用缓存的 tool 列表，不重复请求。未返回 `ttlMs` 时每次 connect 请求一次。
 
@@ -371,7 +380,7 @@ v1 只提供文件系统工具，**不提供 `run_shell`**（五个高级 agent 
 
 | 模式 | CLI 参数 | 执行路径 |
 |------|----------|---------|
-| 日期阈值 | `--stale-before 2025-01-01` | **纯代码**：CLI 层遍历节点 → 按 `updated` 过滤 → 批量 `delete_node`。不启动 LLM。 |
+| 日期阈值 | `--stale-before 2025-01-01` | **纯代码**：CLI 层直接 import WikiGraph + `scanWiki` 全量遍历（不走 MCP，避免 `read_graph` 的 500 节点上限）→ 按 `updated` 过滤 → 批量 `delete_node`。不启动 LLM。 |
 | 精确指定 | `--slugs a,b,c` | **纯代码**：直接调 `delete_node`。不启动 LLM。 |
 | 内容判断 | `--query "..."` | **Agent loop**：LLM 读内容 + 搜索 MCP 验证是否过时 → 决定删什么。 |
 
@@ -448,6 +457,7 @@ llm-wiki reason --center "transformer" --depth 3 --apply --wiki ./my-wiki
 | `--mcp-config <path>` | 外部 MCP server 配置文件（JSON） |
 | `--verbose` | 打印每轮 tool 调用日志到 stderr |
 | `--full-transcript` | 配合 `--json`，输出完整 messages 数组 |
+| `--dry-run` | 预览操作但不执行（v2 实现，v1 不支持） |
 
 ### 各命令专有选项
 
@@ -525,9 +535,10 @@ wiki-graph-mcp 不需要配置——agent 启动时自动连接，wiki root 从 
 ## 10. 实现顺序
 
 1. `agent/openai.ts` — LLM 客户端（无外部依赖，可独立测试）
-2. `agent/mcp.ts` — MCP 客户端（stdio + Streamable HTTP）
+2a. `agent/mcp.ts` — MCP 客户端，**只实现 2025-11-25**（initialize 握手），跑通全部 agent
+2b. `agent/mcp.ts` — 加 2026-07-28 无状态模式 + fallback 逻辑（独立迭代，不阻塞后续步骤）
 3. `agent/tools.ts` — 本地工具
-4. `agent/loop.ts` — 智能体循环（依赖 1/2/3）
+4. `agent/loop.ts` — 智能体循环（依赖 1/2a/3）
 5. `cli/graph.ts` — 现有操作搬迁到 graph 子命令
 6. `cli/index.ts` — 主入口路由
 7. `agent/purge.ts` — 最简单的高级 agent（不需要网络）
@@ -568,3 +579,15 @@ wiki-graph-mcp 不需要配置——agent 启动时自动连接，wiki root 从 
 | 7 | 🟡 | `edit_file` 模糊匹配风险 | ✅ v1 只做精确匹配 + 缩进/空白容差，不做 Unicode 模糊 |
 | 8 | 🟢 | `rebuild_index` 一致性 | ✅ 从 ingest 删除（`addNode` 内部自动 `maintainIndex`） |
 | 9 | 🟢 | purge 的 `remove_edge` 多余 | ✅ 从 purge 和 check 删除（`delete_node` 已自动清边） |
+
+## 附录 C：第三轮专家评审意见处理记录
+
+| # | 级别 | 意见 | 处理 |
+|---|------|------|------|
+| 1 | 🔴 | 锚定消息"引用"判定无可实现定义 | ✅ 收窄为：后续 tool call args 中出现与 `get_node` slug / `read_file` path 完全相同的字符串（Set 查找）；溢出时锚定保留量降至 512B |
+| 2 | 🟡 | purge 纯代码模式节点枚举路径未说明 | ✅ 明确：直接 import WikiGraph + `scanWiki`，不走 MCP（避免 500 节点上限） |
+| 3 | 🟡 | MCP fallback 触发条件不精确 | ✅ 明确：`-32600`/`-32601`/HTTP 400 含 "initialize" 才 fallback，其他错误直接报错 |
+| 4 | 🟡 | MRTR `input_required` 无处理 | ✅ 视为 tool 调用失败，错误消息明确说 MRTR not supported，计入熔断 |
+| 5 | 🟡 | 实现顺序未反映双版本复杂度 | ✅ 拆为 2a（2025-11-25 跑通）+ 2b（2026-07-28 + fallback，独立迭代） |
+| 6 | 🟢 | 高级命令缺 `--dry-run` | ✅ §5 预留，标注 v2 实现 |
+| 7 | 🟢 | 并发 agent 运行未提及 | ✅ §4.2.2 加一句：不支持同一 wiki 并发 agent，并发安全由调用方保证 |
