@@ -1,6 +1,6 @@
 # llm-wiki-ops 高级智能体层设计方案
 
-> 状态：待评审（v2，整合专家评审意见）
+> 状态：待评审（v3，MCP 规范升级至 2026-07-28 + 专家评审意见）
 > 日期：2026-07-31
 
 ## 1. 背景与动机
@@ -218,24 +218,55 @@ Agent 通过 MCP 顺序调用 `add_node` → `add_edge` → `update_node`。如�
 | **stdio** | 本地 server（wiki-graph-mcp、本地搜索工具） |
 | **Streamable HTTP** | 远程 server（云端搜索、SaaS 工具） |
 
-不做 legacy SSE。
+不做 legacy SSE（2024-11-05 的 HTTP+SSE 已废弃）。
 
 **连接模型**：stdio spawn 一次，保持长连接。不是每次 tool call 都 spawn。
 
-**参考 MCP spec 版本**：2025-03-26。
+#### 4.3.1 目标规范与版本兼容
+
+**主要目标：MCP spec 2026-07-28**（2026 年 7 月 28 日发布，自发布以来最大修订）。
+
+2026-07-28 的核心变化——**无状态协议**：
+
+| 旧（≤ 2025-11-25） | 新（2026-07-28） |
+|---------------------|-------------------|
+| 连接时 `initialize`/`initialized` 握手 | **废除**。每个请求自带 `_meta`（protocolVersion、clientInfo、capabilities） |
+| `Mcp-Session-Id` header 维持会话 | **废除**。每个请求完全自包含，可落在任意 server 实例 |
+| server-to-client SSE 推送 | **废除**。替代方案：MRTR（Multi Round-Trip Requests），server 返回 `resultType: "input_required"`，client 带回答重新调用 |
+| Streamable HTTP header 可选 | `Mcp-Method`、`Mcp-Name`、`MCP-Protocol-Version` 现在是**必需** header |
+| `tools/list` 无缓存提示 | 响应携带 `ttlMs` + `cacheScope`，客户端可据此缓存 |
+| — | 新增可选 `server/discover` RPC（获取 server 能力，非必须） |
+
+**兼容策略**：2026-07-28 刚发布，现有 MCP server（包括我们自己的 `wiki-graph-mcp` 依赖的 `@modelcontextprotocol/sdk`）大概率还在说 2025-11-25。客户端必须兼容两版：
+
+```
+connect(server):
+  1. 发送 tools/list，请求带 _meta: { protocolVersion: "2026-07-28", clientInfo: {...} }
+     + Streamable HTTP 时带 Mcp-Method / Mcp-Name / MCP-Protocol-Version header
+  2. 如果 server 返回错误（不认识 _meta / 要求 initialize）：
+     → fallback：发送 initialize 握手（protocolVersion: "2025-11-25"）
+     → 等待 initialized 确认
+     → 重新发送 tools/list（不带 _meta）
+  3. 记录 server 实际协议版本，后续请求按该版本格式发送
+```
+
+stdio 和 Streamable HTTP 共用同一套 fallback 逻辑。stdio 下 `_meta` 在 JSON-RPC params 里传；HTTP 下额外带 header。
 
 **实现的 JSON-RPC 方法子集**：
 
-| 方法 | 方向 | 说明 |
-|------|------|------|
-| `initialize` | client → server | 握手，交换能力 |
-| `notifications/initialized` | client → server | 确认初始化完成 |
-| `tools/list` | client → server | 获取 tool 列表 |
-| `tools/call` | client → server | 调用 tool |
+| 方法 | 说明 | 2026-07-28 | ≤ 2025-11-25 |
+|------|------|-----------|-------------|
+| `tools/list` | 获取 tool 列表 | ✅ 带 `_meta` | ✅ 需先 initialize |
+| `tools/call` | 调用 tool | ✅ 带 `_meta` | ✅ |
+| `initialize` | 握手 | ❌ 已废除 | ✅ fallback 时用 |
+| `notifications/initialized` | 确认初始化 | ❌ 已废除 | ✅ fallback 时用 |
+| `server/discover` | 获取 server 能力 | 可选 | 不存在 |
 
-**不实现**：资源订阅（resources）、server-to-client SSE 通知、连接恢复、sampling、prompts。
+**不实现**：资源订阅（resources）、prompts、sampling、MRTR（v1 不需要 server 向 client 发起请求）、Extensions/MCP Apps/Tasks。
 
-**Streamable HTTP session 管理**：服务端返回 `Mcp-Session-Id` header 时，后续请求携带该 header。服务端未返回时按无状态处理。
+**`tools/list` 缓存**：server 返回 `ttlMs` 时，客户端在 TTL 内复用缓存的 tool 列表，不重复请求。未返回 `ttlMs` 时每次 connect 请求一次。
+
+#### 4.3.2 接口
 
 ```typescript
 interface McpServerConfig {
@@ -495,5 +526,5 @@ wiki-graph-mcp 不需要配置——agent 启动时自动连接，wiki root 从 
 | 10 | 测试策略缺失 | ✅ 新增 §9：四层测试方案 |
 | 11 | reason 规格最弱，"只发现"与写操作矛盾 | ✅ 双模式：`--report`（默认，只读）/ `--apply`（写） |
 | 12 | `get_datetime` 价值存疑 | ✅ 砍掉，当前时间写进 system prompt |
-| 13 | MCP 客户端工作量被低估 | ✅ 明确 spec 版本（2025-03-26）+ 实现方法子集 |
+| 13 | MCP 客户端工作量被低估 | ✅ 目标升级为 spec 2026-07-28（无状态核心），兼容 ≤2025-11-25 fallback；明确方法子集 + 缓存 |
 | 14 | 缺 `rename_node` | ✅ ingest 和 research 的 tool 集加入 |
