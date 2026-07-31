@@ -352,7 +352,7 @@ v1 只提供文件系统工具，**不提供 `run_shell`**（五个高级 agent 
 
 **MCP server 暴露的实际工具名**（agent tool 集必须与之一致）：
 
-`get_stats`、`read_graph`、`get_node`、`get_edges`、`add_node`、`update_node`、`rename_node`、`delete_node`、`add_edge`、`remove_edge`、`rebuild_index`、`metrics`
+`get_stats`、`read_graph`、`get_node`、`get_edges`、`add_node`、`update_node`、`rename_node`、`delete_node`、`add_edge`、`remove_edge`、`rebuild_index`、`metrics`、`create_wiki`
 
 以下 tool 集中 `wiki.` 前缀由 MCP 客户端自动添加。
 
@@ -423,6 +423,10 @@ npm 包名保持 `llm-wiki-ops`。项目处于 v0.1.0，semver 0.x 允许 breaki
 ### 命令结构
 
 ```bash
+# 初始化
+llm-wiki new my-wiki                    # 在当前目录创建 my-wiki/
+llm-wiki new my-wiki --path ~/wikis     # 在指定目录下创建
+
 # 低级操作（现有 12 个，收进 graph 子命令）
 llm-wiki graph stats
 llm-wiki graph add-node --title "My Page" --type concept
@@ -441,6 +445,22 @@ llm-wiki reason --center "transformer" --depth 3 --apply --wiki ./my-wiki
 ```
 
 不做隐式 fallback（`llm-wiki stats` ≠ `llm-wiki graph stats`）。命令层级明确。
+
+### `llm-wiki new` — Wiki 初始化
+
+纯代码，不走 LLM，不走 MCP。在指定目录下创建最小 wiki 结构：
+
+```
+my-wiki/
+└── wiki/
+    ├── index.md      ← 分类索引骨架（Entities/Concepts/Sources/Queries/Comparisons/Synthesis）
+    ├── log.md        ← 研究日志（自动写入创建日期条目）
+    └── overview.md   ← 带 frontmatter 的概览页（type: overview）
+```
+
+- `index.md` 和 `log.md` 是基础设施文件，`scanWiki` 会跳过它们
+- 目标目录已存在且非空 → 报错（不覆盖）
+- 同时暴露为 MCP tool `create_wiki`（供 agent 在发现 wiki 不存在时自动初始化）
 
 ### Wiki root 解析
 
@@ -540,7 +560,7 @@ wiki-graph-mcp 不需要配置——agent 启动时自动连接，wiki root 从 
 3. `agent/tools.ts` — 本地工具
 4. `agent/loop.ts` — 智能体循环（依赖 1/2a/3）
 5. `cli/graph.ts` — 现有操作搬迁到 graph 子命令
-6. `cli/index.ts` — 主入口路由
+6. `cli/index.ts` — 主入口路由 + `llm-wiki new` + MCP server 加 `create_wiki` tool
 7. `agent/purge.ts` — 最简单的高级 agent（不需要网络）
 8. `agent/ingest.ts` — 核心场景
 9. `agent/research.ts` — 需要搜索 MCP
