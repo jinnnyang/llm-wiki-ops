@@ -1,26 +1,34 @@
 ---
 kind: questions
-last_updated: '2026-07-31T09:34:47+00:00'
+last_updated: '2026-08-03T08:59:05+00:00'
+last_verified: '2026-08-03T08:52:56+00:00'
 last_writer: hand-off
-last_agent: hermes
-session_id: llm-wiki-ops-agent-layer
-last_verified: '2026-07-31T09:34:05+00:00'
+last_agent: hermes-devops
+session_id: 2026-08-03-scancache-design
 ---
 
 # Questions
 
 ## Open
 
-- [ ] 核心假设验证：LLM 能否可靠地通过 MCP tools 操作 wiki？需要拿真模型跑一次 ingest 才能回答。
-- [ ] 上下文管理参数（100K 阈值、2KB 锚定、512B 降级）是否合理？需要真实运行数据。
-- [ ] npm publish 时 `llm-wiki` bin 名是否可用？（已被 @sdsrs/llm-wiki 占用）
-- [ ] `status: invalidated` 节点在 `read_graph`/`metrics`/`index.md` 中如何处理？（过滤？标注？）
-- [ ] MCP client stdio 消息分帧细节：换行分隔 JSON、partial read、背压、子进程 stderr 处理——设计文档未覆盖，实现时需要确认。
+- [ ] scanWiki 缓存 A′ 实施：四步计划已定（见 task.md），等用户放行。用户 2026-08-03 明确「暂不操作文件」。
+- [ ] in-flight promise 去重（同一轮并行调用的冷缓存双扫）要不要加？倾向不加（首次之后全命中，避免多余实体），未最终拍板。
+- [ ] 本 session 代码提交策略：src/agent/ 整目录 untracked + 11 个已跟踪文件已修改，建议与 hand-off 一并 commit（分 docs / feat 两个 commit 或合一，由用户定）。
+- [ ] 上下文管理参数（100K 阈值、2KB 锚定、512B 降级）是否合理？reason 真实运行未报上下文问题，但样本只有 29 轮，仍需更多运行数据。（7-31 遗留）
+- [ ] npm publish 时 `llm-wiki` bin 名是否可用？（已被 @sdsrs/llm-wiki 占用）（7-31 遗留）
+- [ ] `status: invalidated` 节点在 `read_graph`/`metrics`/`index.md` 中如何处理？（过滤？标注？）（7-31 遗留）
 
 - None.
 
 ## Closed
 
+- [x] 核心假设验证：LLM 能否可靠地通过 MCP tools 操作 wiki？→ reason 真实运行已验证：27 次 wiki 工具调用全部成功（read_graph/get_edges/get_node/add 路径打通）。ingest 尚未真跑。（7-31 Open，2026-08-03 关闭） <!-- resolved -->
+- [x] MCP client stdio 消息分帧细节？→ agent 层实现中已解决并验证（174/174 测试）。（7-31 Open，2026-08-03 关闭） <!-- resolved -->
+- [x] 缓存以文件形式落盘吗？→ 不落盘。纯内存进程级 Map；派生数据不值得持久化；崩溃无需恢复（源头永远是 .md）。 <!-- resolved -->
+- [x] CLI 每条命令独立，缓存怎么生效？→ 不跨命令生效也不需要：读命令单次扫描是固有成本；写命令（addNode/addEdge）单进程扫 2 次，第二次受益。主战场是 MCP 常驻进程（agent run）。 <!-- resolved -->
+- [x] 多个 wiki 怎么确定调用哪一个？→ key = path.resolve(wikiDir)，调用方显式带 wikiDir（CLI --wiki / reason WIKI_ROOT / desktop wiki_root 参数），缓存不做路由，天然隔离。 <!-- resolved -->
+- [x] agent 专属驻留 CRUD 层 / 子图按需加载 / merged 图谱？→ 不做。内存不是先撞的墙；子图层要么零收益要么退化为持久化索引；merged 图无跨 wiki 边 + slug 冲突。A′ 模块级 Map 已满足驻留/多 wiki 需求。 <!-- resolved -->
+- [x] reason 超时主因是 wiki 工具慢吗？→ 不是。~9s/600s，大头是 LLM 生成时间（20s/轮）。主因是预算不可见（已修：userMessage 注入预算 + 预留 20% 写报告）。 <!-- resolved -->
 - [x] MCP 版本选择？→ v1 只做 2025-11-25，2026-07-28 放 v1.1 <!-- resolved -->
 - [x] purge 删除还是标记？→ 默认标记失效，--hard-delete 才删 <!-- resolved -->
 - [x] token 估算是否需要？→ 不需要，纯字符阈值 100K <!-- resolved -->
