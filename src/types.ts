@@ -22,6 +22,18 @@ export type KnownPageType =
 /** Actual type: known types + arbitrary extension strings */
 export type PageType = KnownPageType | (string & {})
 
+// ── Related entries (typed edges) ───────────────────────────────────
+
+/**
+ * A single frontmatter `related[]` entry.
+ * - string: plain slug — untyped connection (legacy form, permanent, not debt)
+ * - { slug, relation }: typed edge (design doc: reason-inference.md §3)
+ *
+ * Direction is first-class: the entry lives in source page's frontmatter
+ * and points at the target, i.e. A→B.
+ */
+export type RelatedEntry = string | { slug: string; relation?: string }
+
 // ── Graph model ─────────────────────────────────────────────────────
 
 export interface GraphNode {
@@ -29,11 +41,15 @@ export interface GraphNode {
   title: string
   type: PageType
   tags: string[]
-  related: string[]
+  related: RelatedEntry[]
   sources: string[]
-  created: string // YYYY-MM-DD
-  updated: string // YYYY-MM-DD
+  created: string // YYYY-MM-DD (page clock: when wiki created this page)
+  updated: string // YYYY-MM-DD (page clock: any edit)
+  as_of?: string // fact clock: when the described state held / event happened
+  checked?: string // verification clock: last fact-check (check agent only)
   path: string // relative to wikiRoot (e.g. "wiki/entities/ai基建周期.md")
+  status?: string // "active" (default) | "invalidated"
+  superseded_by?: string // slug of replacement node (when status=invalidated)
 }
 
 export type EdgeOrigin = "wikilink" | "related"
@@ -42,6 +58,11 @@ export interface GraphEdge {
   source: string
   target: string
   origins: EdgeOrigin[]
+  /**
+   * Edge type from the frontmatter related entry (wikilinks are never typed).
+   * Undefined = untyped connection ("edge exists, type unknown").
+   */
+  relation?: string
 }
 
 export interface Graph {
@@ -78,12 +99,16 @@ export interface WikiPage {
   title: string
   type: PageType
   tags: string[]
-  related: string[]
+  related: RelatedEntry[]
   sources: string[]
   created: string
   updated: string
+  as_of?: string
+  checked?: string
   content: string // body without frontmatter, without title heading
   path: string
+  status?: string
+  superseded_by?: string
 }
 
 export interface WikiStats {
@@ -112,6 +137,8 @@ export interface AddNodeInput {
   tags?: string[]
   related?: string[]
   sources?: string[]
+  /** Fact clock: when the described state held / event happened. Extract, never invent; omit when unknown. */
+  as_of?: string
   onSlugConflict?: "append" | "error" // default "append"
   dryRun?: boolean
 }
@@ -133,6 +160,12 @@ export interface UpdateNodePatch {
   tags?: string[]
   related?: string[]
   sources?: string[]
+  status?: string
+  superseded_by?: string
+  /** Fact clock (see AddNodeInput.as_of). Fact changed → reset to the new fact's effective date. */
+  as_of?: string
+  /** Verification clock: set by check agent after fact verification. */
+  checked?: string
   dryRun?: boolean
 }
 
@@ -173,6 +206,12 @@ export interface RebuildIndexResult extends MutationResult {
 
 export interface AddEdgeOptions {
   context?: string
+  /**
+   * Edge type (open vocabulary; recommended: is_a, instance_of, causes,
+   * contradicts, explains, superseded_by, related). Ignored for self-loops.
+   * Upgrades an existing plain-string related entry in place.
+   */
+  relation?: string
   dryRun?: boolean
 }
 
@@ -180,6 +219,8 @@ export interface AddEdgeResult extends MutationResult {
   created: boolean
   originsBefore: EdgeOrigin[]
   originsAfter: EdgeOrigin[]
+  relationBefore?: string
+  relationAfter?: string
 }
 
 export interface RemoveEdgeOptions {

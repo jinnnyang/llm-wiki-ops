@@ -126,7 +126,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "add_node",
       description:
-        "Create a wiki page. Slug is derived from title (lowercase, spaces→hyphens, CJK preserved). If slug collides, appends -2/-3 and returns slug_collided=true — caller MUST inspect this before wiring edges. Content wikilinks are auto-synced into related[]. Type defaults to 'synthesis' if omitted.",
+        "Create a wiki page. Slug is derived from title (lowercase, spaces→hyphens, CJK preserved). If slug collides, appends -2/-3 and returns slug_collided=true — caller MUST inspect this before wiring edges. Content wikilinks are auto-synced into related[]. Type defaults to 'synthesis' if omitted.\nas_of: fact clock — the date the described state held / event happened. Extract from source text, never invent; omit when unknown.",
       inputSchema: {
         type: "object",
         properties: {
@@ -136,6 +136,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           tags: { type: "array", items: { type: "string" }, description: "Tags" },
           related: { type: "array", items: { type: "string" }, description: "Related slugs" },
           sources: { type: "array", items: { type: "string" }, description: "Source URLs or paths" },
+          as_of: { type: "string", description: "Fact clock YYYY-MM-DD: when the described state held / event happened (extract, never invent)" },
           on_slug_conflict: { type: "string", enum: ["append", "error"], description: "Default: append" },
           dry_run: { type: "boolean", description: "Preview without writing" },
           wiki_root: wikiRootProp,
@@ -146,7 +147,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "update_node",
-      description: "Update a page's attributes. Changing type triggers a directory move.",
+      description: "Update a page's attributes. Changing type triggers a directory move.\nas_of: fact clock — reset to the new fact's effective date when content facts change.\nchecked: verification clock — set by the check agent after fact verification (YYYY-MM-DD).",
       inputSchema: {
         type: "object",
         properties: {
@@ -157,6 +158,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           tags: { type: "array", items: { type: "string" } },
           related: { type: "array", items: { type: "string" } },
           sources: { type: "array", items: { type: "string" }, description: "Source URLs or paths (replaces)" },
+          status: { type: "string", description: "Node status: 'active' (default) or 'invalidated'" },
+          superseded_by: { type: "string", description: "Slug of replacement node (when status=invalidated)" },
+          as_of: { type: "string", description: "Fact clock YYYY-MM-DD (see add_node.as_of)" },
+          checked: { type: "string", description: "Verification clock YYYY-MM-DD (check agent)" },
           dry_run: { type: "boolean" },
           wiki_root: wikiRootProp,
         },
@@ -199,13 +204,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "add_edge",
       description:
-        "Ensure an edge from source to target exists in BOTH carriers (inline [[wikilink]] and frontmatter related). IDEMPOTENT: if both already present, succeeds with created=false. If only one carrier exists, fills the missing one (created=true). Inspect created and origins_after to know what happened.\nEdge insertion point: uses context param if given, else appends to \"## 相关\" section, else creates one at file end.\nERRORS: throws NODE_NOT_FOUND if source or target slug does not exist. Self-loops (source=target) are allowed.",
+        "Ensure an edge from source to target exists in BOTH carriers (inline [[wikilink]] and frontmatter related). IDEMPOTENT: if both already present, succeeds with created=false. If only one carrier exists, fills the missing one (created=true). Inspect created and origins_after to know what happened.\nrelation: edge type, written into the frontmatter related entry (open vocabulary; recommended: is_a, instance_of, causes, contradicts, explains, superseded_by, related). Wikilinks are never typed. Upgrades an existing untyped related entry in place; omitted relation never downgrades a typed one. Ignored for self-loops.\nEdge insertion point: uses context param if given, else appends to \"## 相关\" section, else creates one at file end.\nERRORS: throws NODE_NOT_FOUND if source or target slug does not exist. Self-loops (source=target) are allowed.",
       inputSchema: {
         type: "object",
         properties: {
           source: { type: "string", description: "Source slug" },
           target: { type: "string", description: "Target slug" },
           context: { type: "string", description: "Section heading for wikilink insertion" },
+          relation: { type: "string", description: "Edge type (recommended: is_a, instance_of, causes, contradicts, explains, superseded_by, related)" },
           dry_run: { type: "boolean" },
           wiki_root: wikiRootProp,
         },
@@ -245,6 +251,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: { wiki_root: wikiRootProp },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "scan_freshness",
+      description:
+        "Pure-code exponential backoff scan (design doc reason-inference.md §4.5): list nodes due for fact-checking. Scheduling clock = checked (falls back to updated). Interval: T=referenceClock−as_of; T<1 month → weekly, else clamp(T/12, 1 week, 3 years). Nodes without as_of are treated as fresh facts → weekly (safe direction). invalidated nodes are excluded. Returns due list sorted by overdueDays desc, plus optional upcoming window. Read-only full scan, zero LLM — feed the due list to the check agent.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          today: { type: "string", description: "Override today YYYY-MM-DD (default: current UTC date)" },
+          upcoming_days: { type: "number", description: "Also return nodes due within this many days" },
+          wiki_root: wikiRootProp,
+        },
         additionalProperties: false,
       },
     },
@@ -301,6 +321,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tags: args?.tags as string[] | undefined,
           related: args?.related as string[] | undefined,
           sources: args?.sources as string[] | undefined,
+          as_of: args?.as_of as string | undefined,
           onSlugConflict: (args?.on_slug_conflict as "append" | "error") ?? "append",
           dryRun: args?.dry_run as boolean | undefined,
         })
@@ -314,6 +335,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tags: args?.tags as string[] | undefined,
           related: args?.related as string[] | undefined,
           sources: args?.sources as string[] | undefined,
+          status: args?.status as string | undefined,
+          superseded_by: args?.superseded_by as string | undefined,
+          as_of: args?.as_of as string | undefined,
+          checked: args?.checked as string | undefined,
           dryRun: args?.dry_run as boolean | undefined,
         })
         break
@@ -336,6 +361,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "add_edge":
         result = await wiki.addEdge(args!.source as string, args!.target as string, {
           context: args?.context as string | undefined,
+          relation: args?.relation as string | undefined,
           dryRun: args?.dry_run as boolean | undefined,
         })
         break
@@ -352,6 +378,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "metrics":
         result = await wiki.getMetrics()
+        break
+
+      case "scan_freshness":
+        result = await wiki.scanFreshness({
+          today: args?.today as string | undefined,
+          upcomingDays: args?.upcoming_days as number | undefined,
+        })
         break
 
       default:

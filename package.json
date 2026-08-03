@@ -6,6 +6,7 @@
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "bin": {
+    "llm-wiki": "./dist/src/cli/index.js",
     "llm-wiki-ops": "./dist/src/cli/index.js",
     "wiki-graph-mcp": "./dist/src/mcp/index.js"
   },

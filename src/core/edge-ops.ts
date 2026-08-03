@@ -21,7 +21,7 @@ import {
 import { readFileClean } from "../io/fs-helpers.js"
 import { normalizeSlug } from "../utils/slug.js"
 import { executeTransaction, type FileChange } from "../transaction/transaction.js"
-import { today, composePage, baseMutation, findPageBySlug } from "./helpers.js"
+import { today, composePage, baseMutation, findPageBySlug, relatedEntrySlug } from "./helpers.js"
 import { WikiGraphError } from "../utils/errors.js"
 import {
   type AddEdgeOptions,
@@ -29,31 +29,52 @@ import {
   type RemoveEdgeOptions,
   type RemoveEdgeResult,
   type EdgeOrigin,
+  type RelatedEntry,
 } from "../types.js"
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** Check if frontmatter related[] contains a slug. */
-function relatedHas(fm: Record<string, unknown> | null, slug: string): boolean {
-  if (!fm || !Array.isArray(fm.related)) return false
+/** Find a frontmatter related[] entry by slug (plain string or typed object). */
+function findRelatedEntry(
+  fm: Record<string, unknown> | null,
+  slug: string,
+): RelatedEntry | null {
+  if (!fm || !Array.isArray(fm.related)) return null
   const norm = normalizeSlug(slug)
-  return (fm.related as string[]).some((r) => normalizeSlug(String(r)) === norm)
+  for (const r of fm.related as RelatedEntry[]) {
+    if (normalizeSlug(relatedEntrySlug(r)) === norm) return r
+  }
+  return null
 }
 
-/** Add a slug to frontmatter related[] (deduped). */
-function addRelated(fm: Record<string, unknown>, slug: string): void {
+/**
+ * Add or upgrade a related[] entry (deduped by slug).
+ * - Entry absent → append (typed object when relation given, else plain slug).
+ * - Entry present + relation given → upgrade/change in place.
+ * - Entry present + no relation → keep as-is (typed entries never downgrade).
+ */
+function setRelated(fm: Record<string, unknown>, slug: string, relation?: string): void {
   const norm = normalizeSlug(slug)
-  const existing = Array.isArray(fm.related) ? (fm.related as string[]) : []
-  if (!existing.some((r) => normalizeSlug(String(r)) === norm)) {
-    fm.related = [...existing, norm]
+  const existing = Array.isArray(fm.related) ? (fm.related as RelatedEntry[]) : []
+  const idx = existing.findIndex((r) => normalizeSlug(relatedEntrySlug(r)) === norm)
+  if (idx === -1) {
+    fm.related = [...existing, relation ? { slug: norm, relation } : norm]
+    return
+  }
+  if (relation !== undefined) {
+    const next = [...existing]
+    next[idx] = { slug: norm, relation }
+    fm.related = next
   }
 }
 
-/** Remove a slug from frontmatter related[]. */
+/** Remove a slug from frontmatter related[] (matches both entry forms). */
 function removeRelated(fm: Record<string, unknown>, slug: string): void {
   if (!Array.isArray(fm.related)) return
   const norm = normalizeSlug(slug)
-  fm.related = (fm.related as string[]).filter((r) => normalizeSlug(String(r)) !== norm)
+  fm.related = (fm.related as RelatedEntry[]).filter(
+    (r) => normalizeSlug(relatedEntrySlug(r)) !== norm,
+  )
 }
 
 // ── addEdge ─────────────────────────────────────────────────────────
@@ -70,6 +91,11 @@ export async function addEdge(
   const tgtNorm = normalizeSlug(target)
   const dryRun = options?.dryRun ?? false
   const isSelfLoop = srcNorm === tgtNorm
+  // Self-loops never get a related entry, so relation is ignored for them.
+  const relation =
+    !isSelfLoop && options?.relation && options.relation.trim()
+      ? options.relation.trim().toLowerCase()
+      : undefined
 
   const result: AddEdgeResult = {
     ...baseMutation(wikiRoot, dryRun),
@@ -98,15 +124,21 @@ export async function addEdge(
   const { frontmatter: srcFm, body: srcBody } = parseFrontmatter(srcContent)
 
   const hasWl = hasWikilink(srcBody, tgtNorm)
-  const hasRel = isSelfLoop ? false : relatedHas(srcFm as Record<string, unknown> | null, tgtNorm)
+  const relEntry = isSelfLoop ? null : findRelatedEntry(srcFm as Record<string, unknown> | null, tgtNorm)
+  const hasRel = relEntry !== null
 
   // Determine current origins
   if (hasWl) result.originsBefore.push("wikilink")
   if (hasRel) result.originsBefore.push("related")
+  result.relationBefore =
+    relEntry !== null && typeof relEntry === "object" ? relEntry.relation : undefined
 
-  // Truth table: both present → no-op
-  if (hasWl && (hasRel || isSelfLoop)) {
+  // Truth table: both present AND no relation change → no-op (idempotent)
+  const relationChanging =
+    hasRel && relation !== undefined && result.relationBefore !== relation
+  if (hasWl && (hasRel || isSelfLoop) && !relationChanging) {
     result.originsAfter = [...result.originsBefore]
+    result.relationAfter = result.relationBefore
     return result
   }
 
@@ -120,23 +152,16 @@ export async function addEdge(
   // Insert wikilink if missing
   if (!hasWl) {
     newBody = insertWikilink(srcBody, tgtNorm, options?.context)
-    result.originsAfter.push("wikilink")
-  } else {
-    result.originsAfter.push("wikilink")
   }
+  result.originsAfter.push("wikilink")
 
-  // Add related if missing (skip for self-loops)
-  if (!isSelfLoop && !hasRel) {
-    addRelated(fm, tgtNorm)
+  // Add or upgrade related entry (skip for self-loops)
+  if (!isSelfLoop) {
+    if (!hasRel || relationChanging) {
+      setRelated(fm, tgtNorm, relation)
+    }
     result.originsAfter.push("related")
-  } else if (hasRel) {
-    result.originsAfter.push("related")
-  }
-
-  // If page had no frontmatter, create it (§13.1, §16 decision 26)
-  if (!srcFm && !isSelfLoop) {
-    // Auto-created frontmatter: related only, no type (§13.1)
-    fm.related = [tgtNorm]
+    result.relationAfter = relation ?? result.relationBefore
   }
 
   // Bump updated and reconstruct uniformly
@@ -193,7 +218,7 @@ export async function removeEdge(
   const { frontmatter: srcFm, body: srcBody } = parseFrontmatter(srcContent)
 
   const hasWl = hasWikilink(srcBody, tgtNorm)
-  const hasRel = isSelfLoop ? false : relatedHas(srcFm as Record<string, unknown> | null, tgtNorm)
+  const hasRel = isSelfLoop ? false : findRelatedEntry(srcFm as Record<string, unknown> | null, tgtNorm) !== null
 
   if (hasWl) result.originsBefore.push("wikilink")
   if (hasRel) result.originsBefore.push("related")

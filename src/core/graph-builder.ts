@@ -26,10 +26,12 @@ import {
   type ReadGraphOptions,
   type GetEdgesOptions,
   type GetEdgesResult,
+  type RelatedEntry,
   INFRA_FILES,
   DIR_TYPE_MAP,
   KNOWN_TYPE_ORDER,
 } from "../types.js"
+import { relatedEntrySlug, normalizeRelatedEntry } from "./helpers.js"
 import { ResultTooLargeError, WikiGraphError } from "../utils/errors.js"
 
 const READ_GRAPH_DEFAULT_LIMIT = 200
@@ -45,14 +47,18 @@ interface ScannedPage {
   title: string
   type: PageType
   tags: string[]
-  related: string[]
+  related: RelatedEntry[]
   sources: string[]
   created: string
   updated: string
+  as_of?: string
+  checked?: string
   content: string
   path: string // relative to wikiRoot
   absPath: string
   wikilinkTargets: string[] // normalized slugs from content
+  status?: string
+  superseded_by?: string
 }
 
 // ── Full scan ───────────────────────────────────────────────────────
@@ -81,13 +87,12 @@ export async function scanWiki(wikiDir: string, wikiRoot: string): Promise<Scann
 
     const title = (frontmatter?.title as string) ?? fileName
     const tags = toStringArray(frontmatter?.tags)
-    const related = toStringArray(frontmatter?.related).map((r) =>
-      // Clean dirty data: related: ["[[a]]"] → "a"
-      r.replace(/^\[\[/, "").replace(/\]\]$/, ""),
-    )
+    const related = parseRelatedEntries(frontmatter?.related).map(normalizeRelatedEntry)
     const sources = toStringArray(frontmatter?.sources)
     const created = (frontmatter?.created as string) ?? ""
     const updated = (frontmatter?.updated as string) ?? ""
+    const as_of = (frontmatter?.as_of as string) || undefined
+    const checked = (frontmatter?.checked as string) || undefined
 
     // Extract wikilinks from body (skips code blocks)
     const wikilinkTargets = [...new Set(extractWikilinks(body).map((t) => normalizeSlug(t)))]
@@ -97,14 +102,18 @@ export async function scanWiki(wikiDir: string, wikiRoot: string): Promise<Scann
       title,
       type,
       tags,
-      related: related.map((r) => normalizeSlug(r)),
+      related,
       sources,
       created,
       updated,
+      as_of,
+      checked,
       content: body,
       path: relPath,
       absPath,
       wikilinkTargets,
+      status: (frontmatter?.status as string) ?? undefined,
+      superseded_by: (frontmatter?.superseded_by as string) ?? undefined,
     })
   }
 
@@ -141,6 +150,40 @@ function toStringArray(v: unknown): string[] {
   return []
 }
 
+/**
+ * Parse a frontmatter related value into entries.
+ * Accepts: a string, an array of strings, and typed entries
+ * ({ slug, relation? }). Cleans legacy "[[a]]" wrapping.
+ * Malformed items are dropped.
+ */
+function parseRelatedEntries(v: unknown): RelatedEntry[] {
+  const clean = (s: string): string => s.replace(/^\[\[/, "").replace(/\]\]$/, "").trim()
+  if (typeof v === "string") {
+    const c = clean(v)
+    return c ? [c] : []
+  }
+  if (!Array.isArray(v)) return []
+  const out: RelatedEntry[] = []
+  for (const item of v) {
+    if (typeof item === "string") {
+      const c = clean(item)
+      if (c) out.push(c)
+    } else if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+      const obj = item as Record<string, unknown>
+      if (typeof obj.slug === "string") {
+        const slug = clean(obj.slug)
+        if (!slug) continue
+        const entry: { slug: string; relation?: string } = { slug }
+        if (typeof obj.relation === "string" && obj.relation.trim()) {
+          entry.relation = obj.relation.trim()
+        }
+        out.push(entry)
+      }
+    }
+  }
+  return out
+}
+
 // ── Build graph ─────────────────────────────────────────────────────
 
 export function buildGraphFromPages(pages: ScannedPage[]): Graph {
@@ -160,15 +203,23 @@ export function buildGraphFromPages(pages: ScannedPage[]): Graph {
       }
     }
 
-    // Related edges
-    for (const target of page.related) {
+    // Related edges (entries may carry a relation — typed edges)
+    for (const entry of page.related) {
+      const target = relatedEntrySlug(entry)
       if (!slugSet.has(target)) continue // dangling related
+      const relation = typeof entry === "string" ? undefined : entry.relation
       const key = `${page.slug}→${target}`
       const existing = edgeMap.get(key)
       if (existing) {
         if (!existing.origins.includes("related")) existing.origins.push("related")
+        if (relation && !existing.relation) existing.relation = relation
       } else {
-        edgeMap.set(key, { source: page.slug, target, origins: ["related"] })
+        edgeMap.set(key, {
+          source: page.slug,
+          target,
+          origins: ["related"],
+          ...(relation ? { relation } : {}),
+        })
       }
     }
   }
@@ -183,7 +234,11 @@ export function buildGraphFromPages(pages: ScannedPage[]): Graph {
       sources: p.sources,
       created: p.created,
       updated: p.updated,
+      as_of: p.as_of,
+      checked: p.checked,
       path: p.path,
+      status: p.status,
+      superseded_by: p.superseded_by,
     })),
     edges: [...edgeMap.values()],
   }
@@ -289,8 +344,12 @@ export async function getNode(
     sources: page.sources,
     created: page.created,
     updated: page.updated,
+    as_of: page.as_of,
+    checked: page.checked,
     content: page.content,
     path: page.path,
+    status: page.status,
+    superseded_by: page.superseded_by,
   }
 }
 

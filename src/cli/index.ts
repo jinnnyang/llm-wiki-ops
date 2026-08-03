@@ -1,317 +1,527 @@
 #!/usr/bin/env node
 /**
- * llm-wiki-ops CLI — llm-wiki-ops
+ * cli/index.ts — llm-wiki main CLI entry point.
  *
- * Design doc: §11.2
+ * Design doc: §5
  *
- * Commands: stats, read, get-node, get-edges, add-node, update-node,
- *           rename-node, delete-node, add-edge, remove-edge, rebuild-index
+ * Binary names: llm-wiki (primary), llm-wiki-ops (alias, backward compat)
  *
- * Global options: --json, --no-index, --wiki <path>
- * Wiki root resolution: --wiki > WIKI_ROOT env
- * --content supports: "text" | - (stdin) | @file
+ * Command structure:
+ *   llm-wiki new <name> [--path <dir>]     — initialize a new wiki
+ *   llm-wiki graph <subcommand>            — 12 low-level graph operations
+ *   llm-wiki ingest|research|purge|check|reason  — high-level agent commands (Phase 2+)
  */
 
 import { Command } from "commander"
-import * as fs from "node:fs/promises"
-import { WikiGraph } from "../index.js"
-import { WikiGraphError } from "../utils/errors.js"
+import { mkdirSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { resolve, join } from "node:path"
+import { createGraphCommand } from "./graph.js"
+import { runIngest, runDirectoryIngest } from "../agent/ingest.js"
+import { resolveTarget, isValidWiki, getWikisRoot, listValidWikis } from "./wiki-resolve.js"
 
 const program = new Command()
 
 program
-  .name("llm-wiki-ops")
-  .description("Graph-level operations for llm-wiki knowledge bases")
-  .version("0.1.0")
-  .option("--json", "machine-readable JSON output")
-  .option("--no-index", "skip index.md maintenance")
-  .option("--wiki <path>", "wiki root directory (default: $WIKI_ROOT)")
+  .name("llm-wiki")
+  .description("LLM-powered wiki operations — graph management + intelligent agents")
+  .version("0.2.0")
 
-// ── Helpers ─────────────────────────────────────────────────────────
+// ── graph subcommand (existing 12 operations) ────────────────────────
 
-/** Resolve wiki root: --wiki global > WIKI_ROOT env > error. */
-function resolveWikiRoot(): string {
-  const root = program.opts().wiki ?? process.env.WIKI_ROOT
-  if (!root) {
-    console.error(
-      "Error: no wiki root specified.\n" +
-      "  Use --wiki <path> or set the WIKI_ROOT environment variable.",
-    )
-    process.exit(1)
-  }
-  return root
-}
+program.addCommand(createGraphCommand())
 
-/**
- * Boilerplate wrapper: resolve wiki root → validate → cleanup → run fn → handle errors.
- * Eliminates the repeated 5-line preamble in every command.
- */
-async function withWiki(fn: (wiki: WikiGraph) => Promise<unknown>): Promise<void> {
-  const wikiRoot = resolveWikiRoot()
-  const wiki = new WikiGraph(wikiRoot, { maintainIndex: program.opts().index !== false })
-  await wiki.validate()
-  await wiki.cleanup()
-  try {
-    const result = await fn(wiki)
-    output(result, jsonFlag())
-  } catch (e) {
-    handleError(e, jsonFlag())
-  }
-}
+// ── use — set/clear SELECTED_WIKI ────────────────────────────────────
 
-function output(data: unknown, json: boolean): void {
-  if (json) {
-    console.log(JSON.stringify(data, null, 2))
-  } else {
-    console.log(formatHuman(data))
-  }
-}
+program
+  .command("use [wiki]")
+  .description("Set the default wiki target (prints shell command to eval)")
+  .action((wiki: string | undefined) => {
+    // Clear: llm-wiki use / | llm-wiki use '' | llm-wiki use
+    if (!wiki || wiki === "/" || wiki === "") {
+      console.error("# Clear SELECTED_WIKI")
+      console.log('$env:SELECTED_WIKI = ""')
+      return
+    }
 
-function formatHuman(data: unknown, indent = 0): string {
-  if (data === null || data === undefined) return "null"
-  if (typeof data !== "object") return String(data)
-  if (Array.isArray(data)) {
-    if (data.length === 0) return "[]"
-    return data.map((item) => `${"  ".repeat(indent)}- ${formatHuman(item, indent + 1)}`).join("\n")
-  }
-  const entries = Object.entries(data as Record<string, unknown>)
-  return entries
-    .map(([k, v]) => {
-      if (typeof v === "object" && v !== null) {
-        return `${"  ".repeat(indent)}${k}:\n${formatHuman(v, indent + 1)}`
+    // Validate: if it looks like a slug, WIKIS_ROOT must be valid
+    const wikisRoot = getWikisRoot()
+    const isSlug = !wiki.includes("/") && !wiki.includes("\\") && !wiki.includes(":")
+
+    if (isSlug) {
+      if (!wikisRoot) {
+        console.error(
+          `Error: "${wiki}" looks like a slug, but WIKIS_ROOT is not set or invalid.\n` +
+          "  Set WIKIS_ROOT first, or use a full path.",
+        )
+        process.exit(1)
       }
-      return `${"  ".repeat(indent)}${k}: ${v}`
-    })
-    .join("\n")
-}
-
-function handleError(e: unknown, json: boolean): never {
-  if (e instanceof WikiGraphError) {
-    if (json) {
-      console.error(JSON.stringify({ error: e.code, message: e.message, detail: e.detail ?? null }, null, 2))
+      const resolved = join(wikisRoot, wiki)
+      if (!isValidWiki(resolved)) {
+        console.error(
+          `Error: "${wiki}" → "${resolved}" is not a valid wiki.\n` +
+          "  A valid wiki must have wiki/, raw/, and wiki/index.md.",
+        )
+        process.exit(1)
+      }
     } else {
-      console.error(`Error [${e.code}]: ${e.message}`)
-      if (e.detail) console.error(`  detail: ${e.detail}`)
-    }
-    process.exit(1)
-  }
-  throw e
-}
-
-/** Read --content value: "text" | - (stdin) | @file */
-async function resolveContent(value: string | undefined): Promise<string | undefined> {
-  if (value === undefined) return undefined
-  if (value === "-") {
-    const chunks: Buffer[] = []
-    for await (const chunk of process.stdin) {
-      chunks.push(chunk as Buffer)
-    }
-    return Buffer.concat(chunks).toString("utf-8")
-  }
-  if (value.startsWith("@")) {
-    return fs.readFile(value.slice(1), "utf-8")
-  }
-  return value
-}
-
-function parseList(value: string | undefined): string[] | undefined {
-  if (!value) return undefined
-  return value.split(",").map((s) => s.trim()).filter(Boolean)
-}
-
-/** parseInt with NaN guard — throws a clean error instead of passing NaN downstream. */
-function safeInt(value: string | undefined, flag: string): number | undefined {
-  if (value === undefined) return undefined
-  const n = parseInt(value, 10)
-  if (Number.isNaN(n)) {
-    console.error(`Error: ${flag} expects an integer, got "${value}"`)
-    process.exit(1)
-  }
-  return n
-}
-
-/** Enum guard — validates a value against an allowlist. */
-function safeEnum<T extends string>(value: string | undefined, flag: string, allowed: readonly T[]): T | undefined {
-  if (value === undefined) return undefined
-  if (!allowed.includes(value as T)) {
-    console.error(`Error: ${flag} must be one of [${allowed.join(", ")}], got "${value}"`)
-    process.exit(1)
-  }
-  return value as T
-}
-
-// ── Commands ────────────────────────────────────────────────────────
-
-const jsonFlag = () => !!program.opts().json
-
-program
-  .command("stats")
-  .description("Lightweight wiki overview (<2KB)")
-  .action(async () => {
-    await withWiki((wiki) => wiki.getStats())
-  })
-
-program
-  .command("read")
-  .description("Query a subgraph with filters")
-  .option("--type <type>", "filter by page type")
-  .option("--tag <tag>", "filter by tag")
-  .option("--query <query>", "substring search on title/slug")
-  .option("--center <slug>", "BFS center node")
-  .option("-k, --depth <n>", "BFS depth (default 1, max 5)")
-  .option("--limit <n>", "max nodes (default 200, max 500)")
-  .action(async (opts: Record<string, unknown>) => {
-    await withWiki((wiki) =>
-      wiki.readGraph({
-        type: opts.type as string | undefined,
-        tag: opts.tag as string | undefined,
-        query: opts.query as string | undefined,
-        center: opts.center as string | undefined,
-        k: safeInt(opts.depth as string | undefined, "--depth"),
-        limit: safeInt(opts.limit as string | undefined, "--limit"),
-      }),
-    )
-  })
-
-program
-  .command("get-node <slug>")
-  .description("Get a single page's full detail")
-  .action(async (slug: string) => {
-    await withWiki(async (wiki) => {
-      const page = await wiki.getNode(slug)
-      if (!page) {
-        throw new WikiGraphError("NODE_NOT_FOUND", `Node "${slug}" not found`, { slug })
+      // Full path — validate it
+      const resolved = resolve(wiki)
+      if (!isValidWiki(resolved)) {
+        console.error(
+          `Error: "${resolved}" is not a valid wiki.\n` +
+          "  A valid wiki must have wiki/, raw/, and wiki/index.md.",
+        )
+        process.exit(1)
       }
-      return page
-    })
+    }
+
+    // stdout: eval-able command only. stderr: human hints.
+    console.error(`# Set SELECTED_WIKI to "${wiki}"`)
+    console.log(`$env:SELECTED_WIKI = "${wiki}"`)
   })
 
+// ── status — show current wiki configuration ────────────────────────
+
 program
-  .command("get-edges <slug>")
-  .description("Get inbound + outbound edges for a node")
-  .option("-k, --depth <n>", "BFS depth (default 1)")
-  .option("--limit <n>", "max edges (default 100)")
-  .action(async (slug: string, opts: Record<string, unknown>) => {
-    await withWiki((wiki) =>
-      wiki.getEdges(slug, {
-        k: safeInt(opts.depth as string | undefined, "--depth"),
-        limit: safeInt(opts.limit as string | undefined, "--limit"),
-      }),
+  .command("status")
+  .description("Show current wiki resolution configuration")
+  .option("--json", "machine-readable JSON output")
+  .action((opts: Record<string, unknown>) => {
+    const wikisRoot = getWikisRoot()
+    const selected = process.env.SELECTED_WIKI || null
+    const wikis = wikisRoot ? listValidWikis(wikisRoot) : []
+
+    const info = {
+      WIKIS_ROOT: wikisRoot ?? "(not set or invalid)",
+      SELECTED_WIKI: selected ?? "(not set)",
+      validWikis: wikis.map((w) => w.split(/[\\/]/).pop()),
+      totalValidWikis: wikis.length,
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify(info, null, 2))
+    } else {
+      console.log(`WIKIS_ROOT:      ${info.WIKIS_ROOT}`)
+      console.log(`SELECTED_WIKI:   ${info.SELECTED_WIKI}`)
+      console.log(`Valid wikis (${info.totalValidWikis}):`)
+      for (const w of info.validWikis) {
+        const marker = w === selected ? " ← selected" : ""
+        console.log(`  - ${w}${marker}`)
+      }
+      if (!selected && wikis.length > 0) {
+        console.log(`\nMode: global search (read-only across all wikis)`)
+        console.log(`  Write operations require: llm-wiki use <wiki> or --wiki <path>`)
+      }
+    }
+  })
+
+// ── new — wiki initialization ────────────────────────────────────────
+
+program
+  .command("new <name>")
+  .description("Initialize a new wiki with minimal structure")
+  .option("--path <dir>", "parent directory (default: current directory)")
+  .action((name: string, opts: Record<string, unknown>) => {
+    const parentDir = resolve((opts.path as string) ?? ".")
+    const wikiRoot = join(parentDir, name)
+    const wikiDir = join(wikiRoot, "wiki")
+
+    // Guard: target exists and is non-empty
+    if (existsSync(wikiRoot)) {
+      const entries = readdirSync(wikiRoot)
+      if (entries.length > 0) {
+        console.error(`Error: "${wikiRoot}" already exists and is not empty.`)
+        process.exit(1)
+      }
+    }
+
+    // Create structure
+    mkdirSync(wikiDir, { recursive: true })
+
+    const today = new Date().toISOString().slice(0, 10)
+
+    // index.md — category index skeleton
+    writeFileSync(
+      join(wikiDir, "index.md"),
+      `# ${name} — Index
+
+## Entities
+
+## Concepts
+
+## Sources
+
+## Queries
+
+## Comparisons
+
+## Synthesis
+`,
+      "utf-8",
     )
+
+    // log.md — research log
+    writeFileSync(
+      join(wikiDir, "log.md"),
+      `# Research Log
+
+## ${today}
+
+- Wiki initialized via \`llm-wiki new ${name}\`
+`,
+      "utf-8",
+    )
+
+    // overview.md — overview page with frontmatter
+    writeFileSync(
+      join(wikiDir, "overview.md"),
+      `---
+title: "${name} Overview"
+type: overview
+created: ${today}
+updated: ${today}
+tags: []
+---
+
+# ${name} Overview
+
+This wiki was initialized on ${today}. Add content with \`llm-wiki ingest\` or \`llm-wiki graph add-node\`.
+`,
+      "utf-8",
+    )
+
+    console.log(`Created wiki at ${wikiRoot}`)
+    console.log(`  wiki/index.md    — category index`)
+    console.log(`  wiki/log.md      — research log`)
+    console.log(`  wiki/overview.md — overview page`)
+    console.log(`\nNext: llm-wiki ingest ./doc.md --wiki ${wikiRoot}`)
   })
 
+// ── ingest — document/directory ingestion agent ─────────────────────
+
 program
-  .command("add-node")
-  .description("Create a new wiki page")
-  .requiredOption("--title <title>", "page title")
-  .option("--type <type>", "page type (default: synthesis)")
-  .option("--content <content>", "page body (text | - for stdin | @file)")
-  .option("--tags <tags>", "comma-separated tags")
-  .option("--related <related>", "comma-separated related slugs")
-  .option("--sources <sources>", "comma-separated source URLs")
-  .option("--on-slug-conflict <mode>", "append | error (default: append)")
-  .option("--dry-run", "preview without writing")
+  .command("ingest <path>")
+  .description("Ingest a document or directory (MD/TXT/HTML/MMD/RMD) into the wiki via LLM agent")
+  .option("--wiki <path>", "wiki root directory")
+  .option("--json", "machine-readable JSON output")
+  .option("--max-iterations <n>", "max agent loop iterations (default 30)")
+  .option("--timeout <minutes>", "timeout in minutes (default 10)")
+  .option("--verbose", "print tool call logs to stderr")
+  .option("--dry-run", "preview operations without writing")
+  .action(async (inputPath: string, opts: Record<string, unknown>) => {
+    const target = resolveTarget(opts.wiki as string | undefined, true)
+    const wikiRoot = target.paths[0]
+
+    const resolved = resolve(inputPath)
+    if (!existsSync(resolved)) {
+      console.error(`Error: path not found: ${resolved}`)
+      process.exit(1)
+    }
+
+    const maxIterations = opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined
+    const timeoutMs = opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined
+
+    try {
+      const isDir = statSync(resolved).isDirectory()
+
+      if (isDir) {
+        // ── Directory ingest ──
+        const dirResult = await runDirectoryIngest({
+          srcDir: resolved,
+          wikiRoot,
+          maxIterations,
+          timeoutMs,
+          verbose: !!opts.verbose,
+          dryRun: !!opts.dryRun,
+        })
+
+        if (opts.json) {
+          console.log(JSON.stringify({
+            mode: "directory",
+            copied: dirResult.copied.length,
+            succeeded: dirResult.succeeded,
+            failed: dirResult.failed,
+            results: dirResult.results.map((r) => ({
+              file: r.file,
+              status: r.result?.status,
+              error: r.error ?? r.result?.error,
+              iterations: r.result?.iterations,
+            })),
+          }, null, 2))
+        } else {
+          console.log(`\n── Directory Ingest ${"─".repeat(44)}`)
+          console.log(`  Source: ${resolved}`)
+          console.log(`  Copied: ${dirResult.copied.length} files → raw/sources/`)
+          console.log(`  Ingested: ${dirResult.succeeded} succeeded, ${dirResult.failed} failed`)
+        }
+
+        if (dirResult.failed > 0 && dirResult.succeeded === 0) {
+          process.exit(1)
+        }
+      } else {
+        // ── Single file ingest ──
+        if (opts.verbose) {
+          console.error(`[ingest] file: ${resolved}`)
+          console.error(`[ingest] wiki: ${wikiRoot}`)
+        }
+
+        const result = await runIngest({
+          filePath: resolved,
+          wikiRoot,
+          maxIterations,
+          timeoutMs,
+          verbose: !!opts.verbose,
+          dryRun: !!opts.dryRun,
+        })
+
+        printAgentResult(result, opts)
+      }
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`)
+      process.exit(1)
+    }
+  })
+
+// ── research — wiki research agent ──────────────────────────────────
+
+program
+  .command("research <query>")
+  .description("Research and enrich wiki content via LLM agent")
+  .option("--wiki <path>", "wiki root directory")
+  .option("--json", "machine-readable JSON output")
+  .option("--max-iterations <n>", "max agent loop iterations (default 30)")
+  .option("--timeout <minutes>", "timeout in minutes (default 10)")
+  .option("--verbose", "print tool call logs to stderr")
+  .option("--dry-run", "preview operations without writing")
+  .action(async (query: string, opts: Record<string, unknown>) => {
+    const target = resolveTarget(opts.wiki as string | undefined, true)
+    const wikiRoot = target.paths[0]
+    const { runResearch } = await import("../agent/research.js")
+    try {
+      const result = await runResearch({
+        wikiRoot,
+        query,
+        maxIterations: opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined,
+        timeoutMs: opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined,
+        verbose: !!opts.verbose,
+        dryRun: !!opts.dryRun,
+      })
+      printAgentResult(result, opts)
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`)
+      process.exit(1)
+    }
+  })
+
+// ── purge — wiki purge agent ────────────────────────────────────────
+
+program
+  .command("purge")
+  .description("Purge outdated/irrelevant wiki content")
+  .option("--wiki <path>", "wiki root directory")
+  .option("--stale-before <date>", "pure code: invalidate nodes updated before YYYY-MM-DD")
+  .option("--slugs <list>", "pure code: comma-separated slugs to invalidate/delete")
+  .option("--query <text>", "LLM agent: content-based judgment")
+  .option("--report", "report mode: list candidates without modifying (for --query)")
+  .option("--apply", "apply mode: execute purging (for --query)")
+  .option("--hard-delete", "actually delete nodes instead of marking invalidated")
+  .option("--superseded-by <slug>", "replacement node slug (for --slugs)")
+  .option("--json", "machine-readable JSON output")
+  .option("--max-iterations <n>", "max agent loop iterations (default 30)")
+  .option("--timeout <minutes>", "timeout in minutes (default 10)")
+  .option("--verbose", "print tool call logs to stderr")
+  .option("--dry-run", "preview operations without writing")
   .action(async (opts: Record<string, unknown>) => {
-    const content = await resolveContent(opts.content as string | undefined)
-    await withWiki((wiki) =>
-      wiki.addNode({
-        title: opts.title as string,
-        type: opts.type as string | undefined,
-        content,
-        tags: parseList(opts.tags as string | undefined),
-        related: parseList(opts.related as string | undefined),
-        sources: parseList(opts.sources as string | undefined),
-        onSlugConflict: safeEnum(opts.onSlugConflict as string | undefined, "--on-slug-conflict", ["append", "error"] as const) ?? "append",
+    const target = resolveTarget(opts.wiki as string | undefined, true)
+    const wikiRoot = target.paths[0]
+
+    try {
+      // Path 1: date threshold (pure code)
+      if (opts.staleBefore) {
+        const { purgeByDate } = await import("../agent/purge.js")
+        const result = await purgeByDate({
+          wikiRoot,
+          staleBefore: opts.staleBefore as string,
+          hardDelete: !!opts.hardDelete,
+          dryRun: !!opts.dryRun,
+        })
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2))
+        } else {
+          console.log(`Scanned ${result.totalScanned} nodes, affected ${result.affected.length}:`)
+          for (const a of result.affected) {
+            console.log(`  ${a.action}: ${a.slug} (${a.title}) [updated: ${a.updated}]`)
+          }
+        }
+        return
+      }
+
+      // Path 2: explicit slugs (pure code)
+      if (opts.slugs) {
+        const { purgeBySlugs } = await import("../agent/purge.js")
+        const slugs = (opts.slugs as string).split(",").map((s) => s.trim()).filter(Boolean)
+        const result = await purgeBySlugs({
+          wikiRoot,
+          slugs,
+          hardDelete: !!opts.hardDelete,
+          supersededBy: opts.supersededBy as string | undefined,
+          dryRun: !!opts.dryRun,
+        })
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2))
+        } else {
+          for (const a of result.affected) {
+            console.log(`  ${a.action}: ${a.slug}`)
+          }
+          if (result.notFound.length > 0) {
+            console.log(`  not found: ${result.notFound.join(", ")}`)
+          }
+        }
+        return
+      }
+
+      // Path 3: LLM content judgment
+      if (opts.query) {
+        const mode = opts.apply ? "apply" : "report"
+        const { runPurgeAgent } = await import("../agent/purge.js")
+        const result = await runPurgeAgent({
+          wikiRoot,
+          query: opts.query as string,
+          mode,
+          hardDelete: !!opts.hardDelete,
+          maxIterations: opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined,
+          timeoutMs: opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined,
+          verbose: !!opts.verbose,
+          dryRun: !!opts.dryRun,
+        })
+        printAgentResult(result, opts)
+        return
+      }
+
+      console.error("Error: specify one of --stale-before, --slugs, or --query")
+      process.exit(1)
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`)
+      process.exit(1)
+    }
+  })
+
+// ── check — wiki verification agent ─────────────────────────────────
+
+program
+  .command("check <query>")
+  .description("Verify factual accuracy of wiki content via LLM agent")
+  .option("--wiki <path>", "wiki root directory")
+  .option("--json", "machine-readable JSON output")
+  .option("--max-iterations <n>", "max agent loop iterations (default 30)")
+  .option("--timeout <minutes>", "timeout in minutes (default 10)")
+  .option("--verbose", "print tool call logs to stderr")
+  .option("--dry-run", "preview operations without writing")
+  .action(async (query: string, opts: Record<string, unknown>) => {
+    const target = resolveTarget(opts.wiki as string | undefined, true)
+    const wikiRoot = target.paths[0]
+    const { runCheck } = await import("../agent/check.js")
+    try {
+      const result = await runCheck({
+        wikiRoot,
+        query,
+        maxIterations: opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined,
+        timeoutMs: opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined,
+        verbose: !!opts.verbose,
         dryRun: !!opts.dryRun,
-      }),
-    )
+      })
+      printAgentResult(result, opts)
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`)
+      process.exit(1)
+    }
   })
 
+// ── reason — wiki deep reasoning agent ──────────────────────────────
+
 program
-  .command("update-node <slug>")
-  .description("Update a page's attributes")
-  .option("--title <title>", "new title")
-  .option("--type <type>", "new type (triggers directory move)")
-  .option("--content <content>", "new body (text | - for stdin | @file)")
-  .option("--tags <tags>", "comma-separated tags (replaces)")
-  .option("--related <related>", "comma-separated related slugs (replaces)")
-  .option("--sources <sources>", "comma-separated sources (replaces)")
-  .option("--dry-run", "preview without writing")
-  .action(async (slug: string, opts: Record<string, unknown>) => {
-    const content = await resolveContent(opts.content as string | undefined)
-    await withWiki((wiki) =>
-      wiki.updateNode(slug, {
-        title: opts.title as string | undefined,
-        type: opts.type as string | undefined,
-        content,
-        tags: parseList(opts.tags as string | undefined),
-        related: parseList(opts.related as string | undefined),
-        sources: parseList(opts.sources as string | undefined),
+  .command("reason <query>")
+  .description("Deep graph reasoning: discover hidden connections, gaps, patterns")
+  .option("--wiki <path>", "wiki root directory")
+  .option("--report", "report mode: analyze only, don't write (default)")
+  .option("--apply", "apply mode: write discovered connections to the graph")
+  .option("--json", "machine-readable JSON output")
+  .option("--max-iterations <n>", "max agent loop iterations (default 30)")
+  .option("--timeout <minutes>", "timeout in minutes (default 10)")
+  .option("--verbose", "print tool call logs to stderr")
+  .option("--dry-run", "preview operations without writing")
+  .action(async (query: string, opts: Record<string, unknown>) => {
+    const target = resolveTarget(opts.wiki as string | undefined, true)
+    const wikiRoot = target.paths[0]
+    const { runReason } = await import("../agent/reason.js")
+    try {
+      const result = await runReason({
+        wikiRoot,
+        query,
+        mode: opts.apply ? "apply" : "report",
+        maxIterations: opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined,
+        timeoutMs: opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined,
+        verbose: !!opts.verbose,
         dryRun: !!opts.dryRun,
-      }),
-    )
+      })
+      printAgentResult(result, opts)
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`)
+      process.exit(1)
+    }
   })
 
-program
-  .command("rename-node <oldSlug> <newSlug>")
-  .description("Rename a page and cascade-update all references")
-  .option("--dry-run", "preview without writing")
-  .action(async (oldSlug: string, newSlug: string, opts: Record<string, unknown>) => {
-    await withWiki((wiki) =>
-      wiki.renameNode(oldSlug, newSlug, { dryRun: !!opts.dryRun }),
-    )
-  })
+// ── Shared output helper ────────────────────────────────────────────
 
-program
-  .command("delete-node <slug>")
-  .description("Delete a page and clean all references")
-  .option("--dangling-refs <mode>", "strikethrough | plain-text | remove (default: strikethrough)")
-  .option("--dry-run", "preview without writing")
-  .action(async (slug: string, opts: Record<string, unknown>) => {
-    await withWiki((wiki) =>
-      wiki.deleteNode(slug, {
-        danglingRefs: safeEnum(opts.danglingRefs as string | undefined, "--dangling-refs", ["strikethrough", "plain-text", "remove"] as const) ?? "strikethrough",
-        dryRun: !!opts.dryRun,
-      }),
-    )
-  })
+function printAgentResult(result: import("../agent/loop.js").AgentResult, opts: Record<string, unknown>) {
+  if (opts.json) {
+    console.log(JSON.stringify({
+      status: result.status,
+      iterations: result.iterations,
+      conclusion: result.conclusion,
+      toolCalls: result.toolCalls.map((tc) => ({
+        tool: tc.tool,
+        args: tc.args,
+        error: tc.error,
+        durationMs: tc.durationMs,
+      })),
+      finalMessage: result.finalMessage,
+      runReport: result.runReport,
+    }, null, 2))
+  } else {
+    if (opts.verbose) {
+      for (const tc of result.toolCalls) {
+        const status = tc.error ? "❌" : "✓"
+        console.error(`  ${status} [iter ${tc.iteration}] ${tc.tool} (${tc.durationMs}ms)`)
+      }
+    }
+    console.log(`\nStatus: ${result.status} (${result.iterations} iterations)`)
 
-program
-  .command("add-edge <source> <target>")
-  .description("Ensure an edge exists in both carriers (idempotent)")
-  .option("--context <heading>", "section heading for wikilink insertion")
-  .option("--dry-run", "preview without writing")
-  .action(async (source: string, target: string, opts: Record<string, unknown>) => {
-    await withWiki((wiki) =>
-      wiki.addEdge(source, target, {
-        context: opts.context as string | undefined,
-        dryRun: !!opts.dryRun,
-      }),
-    )
-  })
+    if (result.error) {
+      console.error(`\nError: ${result.error}`)
+    }
 
-program
-  .command("remove-edge <source> <target>")
-  .description("Remove an edge from both carriers (idempotent)")
-  .option("--dry-run", "preview without writing")
-  .action(async (source: string, target: string, opts: Record<string, unknown>) => {
-    await withWiki((wiki) =>
-      wiki.removeEdge(source, target, { dryRun: !!opts.dryRun }),
-    )
-  })
+    // Conclusion first — the answer to the user's query
+    if (result.conclusion) {
+      console.log(`\n── Conclusion ${"─".repeat(50)}`)
+      console.log(result.conclusion)
+    }
 
-program
-  .command("rebuild-index")
-  .description("Full rebuild of index.md (preserves custom sections)")
-  .action(async () => {
-    await withWiki((wiki) => wiki.rebuildIndex())
-  })
+    if (result.runReport.changes.length > 0) {
+      console.log(`\n── Changes ${"─".repeat(54)}`)
+      for (const c of result.runReport.changes) {
+        console.log(`  ${c.action}: ${c.file}`)
+      }
+    }
 
-program
-  .command("metrics")
-  .description("Compute graph metrics: topology, source overlap, type edges, type balance")
-  .action(async () => {
-    await withWiki((wiki) => wiki.getMetrics())
-  })
+    // Fallback: if no conclusion, show the last assistant message
+    if (!result.conclusion && result.finalMessage) {
+      console.log(`\n${result.finalMessage}`)
+    }
+  }
+  if (result.status === "error") {
+    process.exit(1)
+  }
+}
 
 program.parse()

@@ -9,7 +9,7 @@ import { normalizeSlug } from "../utils/slug.js"
 import { serializeFrontmatter } from "../io/frontmatter.js"
 import { findMarkdownFiles } from "../io/fs-helpers.js"
 import { WikiGraphError } from "../utils/errors.js"
-import { INFRA_FILES, type MutationResult } from "../types.js"
+import { INFRA_FILES, type MutationResult, type RelatedEntry } from "../types.js"
 
 /** Current date as YYYY-MM-DD. */
 export function today(): string {
@@ -44,4 +44,23 @@ export async function findPageBySlug(wikiDir: string, slug: string): Promise<str
     })
   }
   return matches[0] ?? null
+}
+
+// ── Related-entry helpers (typed edges) ─────────────────────────────
+
+/** Extract the slug from a related entry (plain string or typed object). */
+export function relatedEntrySlug(entry: RelatedEntry): string {
+  return typeof entry === "string" ? entry : entry.slug
+}
+
+/**
+ * Normalize a related entry: NFKC-lowercase the slug, trim+lowercase the
+ * relation. An object entry with an empty relation collapses to a plain
+ * string (untyped connection).
+ */
+export function normalizeRelatedEntry(entry: RelatedEntry): RelatedEntry {
+  if (typeof entry === "string") return normalizeSlug(entry)
+  const slug = normalizeSlug(entry.slug)
+  const relation = entry.relation?.trim().toLowerCase()
+  return relation ? { slug, relation } : slug
 }

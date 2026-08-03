@@ -11,8 +11,9 @@
  */
 
 import yaml from "js-yaml"
+import type { RelatedEntry } from "../types.js"
 
-export type FrontmatterValue = string | string[]
+export type FrontmatterValue = string | string[] | RelatedEntry[]
 
 export interface FrontmatterParseResult {
   frontmatter: Record<string, FrontmatterValue> | null
@@ -143,10 +144,39 @@ function normalize(parsed: unknown): Record<string, FrontmatterValue> | null {
   const out: Record<string, FrontmatterValue> = {}
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (Array.isArray(value)) {
-      out[key] = value.map((v) => stringifyScalar(v))
+      // related[] carries typed-edge objects ({ slug, relation }) — preserve
+      // them instead of JSON.stringify-ing (design: reason-inference.md §3.3).
+      out[key] =
+        key === "related"
+          ? normalizeRelatedArray(value)
+          : value.map((v) => stringifyScalar(v))
       continue
     }
     out[key] = stringifyScalar(value)
+  }
+  return out
+}
+
+/**
+ * Normalize a related[] array: strings pass through (stringifyScalar);
+ * well-formed `{ slug, relation? }` objects are preserved (typed edges);
+ * anything else is stringified (legacy behavior).
+ */
+function normalizeRelatedArray(value: unknown[]): RelatedEntry[] {
+  const out: RelatedEntry[] = []
+  for (const v of value) {
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      const obj = v as Record<string, unknown>
+      if (typeof obj.slug === "string" && obj.slug) {
+        const entry: { slug: string; relation?: string } = { slug: obj.slug }
+        if (typeof obj.relation === "string" && obj.relation) {
+          entry.relation = obj.relation
+        }
+        out.push(entry)
+        continue
+      }
+    }
+    out.push(stringifyScalar(v))
   }
   return out
 }

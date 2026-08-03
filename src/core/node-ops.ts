@@ -21,7 +21,7 @@ import {
   rebuildIndexPreservingCustom,
 } from "./index-maintainer.js"
 import { scanWiki } from "./graph-builder.js"
-import { today, composePage, baseMutation, findPageBySlug } from "./helpers.js"
+import { today, composePage, baseMutation, findPageBySlug, relatedEntrySlug } from "./helpers.js"
 import { WikiGraphError, InvalidSlugError } from "../utils/errors.js"
 import {
   type AddNodeInput,
@@ -35,6 +35,7 @@ import {
   type RebuildIndexResult,
   type PageType,
   type GraphNode,
+  type RelatedEntry,
   TYPE_DIR_MAP,
   INFRA_FILES,
 } from "../types.js"
@@ -140,6 +141,7 @@ export async function addNode(
     created: today(),
     updated: today(),
   }
+  if (input.as_of) fm.as_of = input.as_of
   if (input.tags && input.tags.length > 0) fm.tags = input.tags
   if (mergedRelated.length > 0) fm.related = mergedRelated
   if (input.sources && input.sources.length > 0) fm.sources = input.sources
@@ -172,6 +174,7 @@ export async function addNode(
       sources: input.sources ?? [],
       created: fm.created as string,
       updated: fm.updated as string,
+      as_of: input.as_of,
       path: result.path,
     }
 
@@ -206,6 +209,7 @@ function isSemanticMatch(
 ): boolean {
   if (existingFm.title !== input.title) return false
   if (existingFm.type !== (input.type ?? "synthesis")) return false
+  if ((existingFm.as_of as string | undefined) !== input.as_of) return false
 
   // Set comparison for tags/related
   const existingTags = new Set(
@@ -216,8 +220,8 @@ function isSemanticMatch(
   for (const t of inputTags) if (!existingTags.has(t)) return false
 
   const existingRelated = new Set(
-    (Array.isArray(existingFm.related) ? existingFm.related : []).map((r: string) =>
-      normalizeSlug(String(r)),
+    (Array.isArray(existingFm.related) ? (existingFm.related as RelatedEntry[]) : []).map(
+      (r) => normalizeSlug(relatedEntrySlug(r)),
     ),
   )
   const inputRelated = new Set(mergedRelated)
@@ -313,6 +317,26 @@ export async function updateNode(
     result.fieldsChanged.push("sources")
   }
 
+  if (patch.status !== undefined && patch.status !== fm.status) {
+    fm.status = patch.status
+    result.fieldsChanged.push("status")
+  }
+
+  if (patch.superseded_by !== undefined && patch.superseded_by !== fm.superseded_by) {
+    fm.superseded_by = patch.superseded_by
+    result.fieldsChanged.push("superseded_by")
+  }
+
+  if (patch.as_of !== undefined && patch.as_of !== fm.as_of) {
+    fm.as_of = patch.as_of
+    result.fieldsChanged.push("as_of")
+  }
+
+  if (patch.checked !== undefined && patch.checked !== fm.checked) {
+    fm.checked = patch.checked
+    result.fieldsChanged.push("checked")
+  }
+
   if (result.fieldsChanged.length === 0) {
     return result // no-op (idempotent)
   }
@@ -345,10 +369,12 @@ export async function updateNode(
         title: (fm.title as string) ?? norm,
         type: (fm.type as PageType) ?? "unknown",
         tags: Array.isArray(fm.tags) ? fm.tags : [],
-        related: Array.isArray(fm.related) ? fm.related : [],
+        related: Array.isArray(fm.related) ? (fm.related as RelatedEntry[]) : [],
         sources: Array.isArray(fm.sources) ? fm.sources : [],
         created: (fm.created as string) ?? "",
         updated: fm.updated as string,
+        as_of: (fm.as_of as string) ?? undefined,
+        checked: (fm.checked as string) ?? undefined,
         path: moved ? moved.to : path.relative(wikiRoot, absPath).replace(/\\/g, "/"),
       }
       const newIndex = updateIndexEntry(indexContent, norm, node)
@@ -441,11 +467,15 @@ export async function renameNode(
     // Also update related[] in frontmatter
     const parsed = parseFrontmatter(updated)
     if (parsed.frontmatter && Array.isArray(parsed.frontmatter.related)) {
-      const related = parsed.frontmatter.related as string[]
-      const hasOld = related.some((r) => normalizeSlug(r) === oldNorm)
+      const related = parsed.frontmatter.related as RelatedEntry[]
+      const hasOld = related.some((r) => normalizeSlug(relatedEntrySlug(r)) === oldNorm)
       if (hasOld) {
         const newRelated = related.map((r) =>
-          normalizeSlug(r) === oldNorm ? newNorm : r,
+          normalizeSlug(relatedEntrySlug(r)) === oldNorm
+            ? typeof r === "string"
+              ? newNorm
+              : { ...r, slug: newNorm }
+            : r,
         )
         // Rebuild with updated related
         const fmParsed = (parsed.frontmatter as Record<string, unknown>)
@@ -471,10 +501,12 @@ export async function renameNode(
         title: (fm.title as string) ?? newNorm,
         type: (fm.type as PageType) ?? "unknown",
         tags: Array.isArray(fm.tags) ? fm.tags : [],
-        related: Array.isArray(fm.related) ? fm.related : [],
+        related: Array.isArray(fm.related) ? (fm.related as RelatedEntry[]) : [],
         sources: Array.isArray(fm.sources) ? fm.sources : [],
         created: (fm.created as string) ?? "",
         updated: fm.updated as string,
+        as_of: (fm.as_of as string) ?? undefined,
+        checked: (fm.checked as string) ?? undefined,
         path: result.moved.to,
       }
       const newIndex = updateIndexEntry(indexContent, oldNorm, node)
@@ -552,10 +584,10 @@ export async function deleteNode(
     // Handle related[] in frontmatter — always remove
     const parsed = parseFrontmatter(updated)
     if (parsed.frontmatter && Array.isArray(parsed.frontmatter.related)) {
-      const related = parsed.frontmatter.related as string[]
-      const hasRef = related.some((r) => normalizeSlug(r) === norm)
+      const related = parsed.frontmatter.related as RelatedEntry[]
+      const hasRef = related.some((r) => normalizeSlug(relatedEntrySlug(r)) === norm)
       if (hasRef) {
-        const newRelated = related.filter((r) => normalizeSlug(r) !== norm)
+        const newRelated = related.filter((r) => normalizeSlug(relatedEntrySlug(r)) !== norm)
         const fmParsed = parsed.frontmatter as Record<string, unknown>
         fmParsed.related = newRelated
         fmParsed.updated = today()
@@ -616,6 +648,8 @@ export async function rebuildIndex(
     sources: p.sources,
     created: p.created,
     updated: p.updated,
+    as_of: p.as_of,
+    checked: p.checked,
     path: p.path,
   }))
 

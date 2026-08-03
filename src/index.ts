@@ -36,6 +36,7 @@ import {
 import { readGraph, getNode, getEdges, getStats, scanWiki, buildGraphFromPages } from "./core/graph-builder.js"
 import { addNode, updateNode, renameNode, deleteNode, rebuildIndex } from "./core/node-ops.js"
 import { addEdge, removeEdge } from "./core/edge-ops.js"
+import { scanFreshness, type ScanFreshnessOptions, type FreshnessScanResult } from "./core/freshness.js"
 import { findTmpFiles, deleteFileIfExists } from "./io/fs-helpers.js"
 import { WikiGraphError } from "./utils/errors.js"
 import { computeMetrics, type GraphMetrics } from "./metrics/index.js"
@@ -83,6 +84,14 @@ export class WikiGraph {
     const pages = await scanWiki(this.wikiDir, this.wikiRoot)
     const graph = buildGraphFromPages(pages)
     return computeMetrics(graph)
+  }
+
+  /**
+   * Freshness scan: pure-code exponential backoff, returns the due list for the
+   * check agent. Design doc: reason-inference.md §4.5. Read-only, no mutations.
+   */
+  async scanFreshness(options?: ScanFreshnessOptions): Promise<FreshnessScanResult> {
+    return scanFreshness(this.wikiDir, this.wikiRoot, options)
   }
 
   // ── Node operations ─────────────────────────────────────────────
