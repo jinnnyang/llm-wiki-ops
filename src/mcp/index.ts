@@ -5,7 +5,7 @@
  * Design doc: §11.3, §11.4
  *
  * Single instance + default wiki + optional per-tool override.
- * 11 tools exposed. cleanup() called once at server.init().
+ * 13 tools exposed. cleanup() called once at server.init().
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"

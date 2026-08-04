@@ -23,6 +23,8 @@ export interface AgentConfig {
 
 export interface ToolCallLog {
   iteration: number
+  /** The LLM tool_call id this result belongs to (matches the tool message). */
+  toolCallId?: string
   tool: string
   args: Record<string, unknown>
   result: unknown
@@ -131,10 +133,19 @@ function truncateToolResult(text: string, toolName: string): string {
 }
 
 /**
- * Build a template summary of compressed iterations (no LLM call).
+ * Build a template summary of compressed tool operations (no LLM call).
+ *
+ * Filters toolLogs by the tool_call_ids of the compressed tool-result
+ * messages — NOT by iteration range. Iteration numbers are loop counters;
+ * the compressed span is defined by message indices and can straddle
+ * iterations, so an iteration-range filter here would summarize the wrong
+ * operations.
  */
-function buildSummary(toolLogs: ToolCallLog[], fromIter: number, toIter: number): string {
-  const relevant = toolLogs.filter((l) => l.iteration >= fromIter && l.iteration <= toIter)
+function buildSummary(toolLogs: ToolCallLog[], compressedCallIds: Set<string>): string {
+  const relevant = toolLogs.filter((l) => l.toolCallId !== undefined && compressedCallIds.has(l.toolCallId))
+  if (relevant.length === 0) return ""
+  const fromIter = Math.min(...relevant.map((l) => l.iteration))
+  const toIter = Math.max(...relevant.map((l) => l.iteration))
   const ops = relevant.map((l) => {
     const status = l.error ? "FAILED" : "ok"
     const key = Object.keys(l.args).slice(0, 2).map((k) => `${k}=${JSON.stringify(l.args[k]).slice(0, 30)}`).join(", ")
@@ -147,8 +158,14 @@ function buildSummary(toolLogs: ToolCallLog[], fromIter: number, toIter: number)
 /**
  * Apply context window management to the messages array.
  * Mutates a copy, returns the managed array.
+ *
+ * Invariant: an assistant message carrying tool_calls and ALL of its tool
+ * result messages are one atomic block — they are kept or compressed
+ * together, never split. OpenAI-compatible APIs reject orphan tool
+ * messages (tool results without a preceding tool_calls), so a naive
+ * per-message keep set can produce invalid request payloads.
  */
-function manageContextWindow(
+export function manageContextWindow(
   messages: ChatMessage[],
   userMessageIndex: number,
   anchoredIdentifiers: Set<string>,
@@ -184,6 +201,37 @@ function manageContextWindow(
   for (const idx of anchoredIndices) mustKeep.add(idx)
   for (let i = recentStart; i < messages.length; i++) mustKeep.add(i)
 
+  // Expand mustKeep to whole tool-call blocks. An assistant message with
+  // tool_calls and all of its tool results form one atomic unit; the
+  // recent-window / anchored boundary must not split them, or the payload
+  // contains orphan tool messages that strict APIs reject.
+  const blockOf = new Map<number, number>() // message index -> block id
+  const blockMembers = new Map<number, number[]>() // block id -> indices
+  let nextBlockId = 0
+  let openBlockId: number | null = null
+  let openCallIds: Set<string> | null = null
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!
+    if (openBlockId !== null && m.role === "tool" && m.tool_call_id && openCallIds!.has(m.tool_call_id)) {
+      blockOf.set(i, openBlockId)
+      blockMembers.get(openBlockId)!.push(i)
+      continue
+    }
+    // Any other message closes the open block
+    openBlockId = null
+    openCallIds = null
+    if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+      openBlockId = nextBlockId++
+      openCallIds = new Set(m.tool_calls.map((tc) => tc.id))
+      blockOf.set(i, openBlockId)
+      blockMembers.set(openBlockId, [i])
+    }
+  }
+  for (const idx of [...mustKeep]) {
+    const b = blockOf.get(idx)
+    if (b !== undefined) for (const member of blockMembers.get(b)!) mustKeep.add(member)
+  }
+
   // Calculate size of must-keep
   let mustKeepChars = 0
   for (const idx of mustKeep) {
@@ -198,17 +246,19 @@ function manageContextWindow(
 
   // Build compressed messages
   const result: ChatMessage[] = []
-  let compressedFrom = -1
-  let compressedTo = -1
+  let compressedCallIds = new Set<string>()
+
+  const flushSummary = () => {
+    if (compressedCallIds.size === 0) return
+    const summary = buildSummary(toolLogs, compressedCallIds)
+    if (summary) result.push({ role: "user", content: summary })
+    compressedCallIds = new Set<string>()
+  }
 
   for (let i = 0; i < messages.length; i++) {
     if (mustKeep.has(i)) {
-      // Flush any pending compression
-      if (compressedFrom !== -1) {
-        const summary = buildSummary(toolLogs, compressedFrom, compressedTo)
-        result.push({ role: "user", content: summary })
-        compressedFrom = -1
-      }
+      // Flush any pending compression before the kept message
+      flushSummary()
       // Apply anchored truncation
       const m = messages[i]!
       if (anchoredIndices.has(i) && i !== userMessageIndex && i !== 0 && m.content) {
@@ -220,17 +270,14 @@ function manageContextWindow(
         result.push(m)
       }
     } else {
-      // Mark for compression
-      if (compressedFrom === -1) compressedFrom = i
-      compressedTo = i
+      // Mark for compression; remember tool-result ids for the summary
+      const m = messages[i]!
+      if (m.role === "tool" && m.tool_call_id) compressedCallIds.add(m.tool_call_id)
     }
   }
 
   // Flush trailing compression
-  if (compressedFrom !== -1) {
-    const summary = buildSummary(toolLogs, compressedFrom, compressedTo)
-    result.push({ role: "user", content: summary })
-  }
+  flushSummary()
 
   return result
 }
@@ -328,7 +375,7 @@ export async function runAgent(
         // Invalid JSON — send error back to LLM
         const errMsg = `Invalid JSON in tool arguments: ${tc.function.arguments.slice(0, 200)}`
         messages.push({ role: "tool", content: errMsg, tool_call_id: tc.id })
-        toolLogs.push({ iteration: iter, tool: rawToolName, args: {}, result: null, error: errMsg, durationMs: Date.now() - t0 })
+        toolLogs.push({ iteration: iter, toolCallId: tc.id, tool: rawToolName, args: {}, result: null, error: errMsg, durationMs: Date.now() - t0 })
         consecutiveErrors++
         if (consecutiveErrors >= maxConsecutiveErrors) {
           status = "error"
@@ -369,7 +416,7 @@ export async function runAgent(
       if (dryRun && dryRunExecutor && isWriteTool(toolName)) {
         result = dryRunExecutor.record(toolName, args)
         messages.push({ role: "tool", content: result, tool_call_id: tc.id })
-        toolLogs.push({ iteration: iter, tool: toolName, args, result, durationMs: Date.now() - t0 })
+        toolLogs.push({ iteration: iter, toolCallId: tc.id, tool: toolName, args, result, durationMs: Date.now() - t0 })
         consecutiveErrors = 0 // dry-run is not an error
         continue
       }
@@ -395,7 +442,7 @@ export async function runAgent(
           toolError = err.message
           result = `[FATAL] ${err.message}`
           messages.push({ role: "tool", content: result, tool_call_id: tc.id })
-          toolLogs.push({ iteration: iter, tool: toolName, args, result: null, error: toolError, durationMs: Date.now() - t0 })
+          toolLogs.push({ iteration: iter, toolCallId: tc.id, tool: toolName, args, result: null, error: toolError, durationMs: Date.now() - t0 })
           break
         }
         toolError = (err as Error).message
@@ -403,7 +450,7 @@ export async function runAgent(
       }
 
       messages.push({ role: "tool", content: result, tool_call_id: tc.id })
-      toolLogs.push({ iteration: iter, tool: toolName, args, result, error: toolError, durationMs: Date.now() - t0 })
+      toolLogs.push({ iteration: iter, toolCallId: tc.id, tool: toolName, args, result, error: toolError, durationMs: Date.now() - t0 })
 
       if (toolError) {
         consecutiveErrors++

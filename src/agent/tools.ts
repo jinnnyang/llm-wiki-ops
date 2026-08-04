@@ -145,7 +145,7 @@ function toolEditFile(wikiRoot: string, args: Record<string, unknown>): LocalToo
     let idx = raw.indexOf(oldString)
     let matchType = "exact"
 
-    // Fallback: whitespace-tolerant match (normalize indentation)
+    // Fallback: whitespace-tolerant match (normalize indentation per line)
     if (idx === -1) {
       const normalize = (s: string) =>
         s
@@ -154,24 +154,31 @@ function toolEditFile(wikiRoot: string, args: Record<string, unknown>): LocalToo
           .join("\n")
       const normRaw = normalize(raw)
       const normOld = normalize(oldString)
+      if (normOld.trim() === "") {
+        return { content: `Error: old_string is empty or whitespace-only.`, isError: true }
+      }
       const normIdx = normRaw.indexOf(normOld)
       if (normIdx !== -1) {
-        // Find the actual position in the original text by matching line-by-line
+        // Uniqueness must hold in normalized space too, otherwise the
+        // fallback silently picks the first of several candidates.
+        if (normRaw.indexOf(normOld, normIdx + 1) !== -1) {
+          return {
+            content: `Error: old_string matches multiple locations in ${path} (whitespace-insensitive). Include more surrounding context to make it unique.`,
+            isError: true,
+          }
+        }
+        // Line-accurate mapping: normalize() trims per line, so line N of
+        // normRaw corresponds 1:1 to line N of raw. Compute the offset
+        // directly — re-searching with indexOf() from position 0 could
+        // land on a different occurrence than the normalized match found.
         const rawLines = raw.split("\n")
         const oldLines = oldString.split("\n")
-        const normRawLines = normRaw.split("\n")
-        const normOldLines = normOld.split("\n")
-        const startNormLine = normRaw.slice(0, normIdx).split("\n").length - 1
-        // Reconstruct from original lines
-        const actualOld = rawLines.slice(startNormLine, startNormLine + oldLines.length).join("\n")
-        idx = raw.indexOf(actualOld)
-        if (idx !== -1) {
-          matchType = "whitespace-tolerant"
-          // Use actual text from file for replacement
-          const result = raw.slice(0, idx) + newString + raw.slice(idx + actualOld.length)
-          writeFileSync(resolved, result, "utf-8")
-          return { content: `Edited ${path} (${matchType} match, ${oldLines.length} lines replaced)` }
-        }
+        const startLine = normRaw.slice(0, normIdx).split("\n").length - 1
+        const actualOld = rawLines.slice(startLine, startLine + oldLines.length).join("\n")
+        const offset = startLine === 0 ? 0 : rawLines.slice(0, startLine).join("\n").length + 1
+        const result = raw.slice(0, offset) + newString + raw.slice(offset + actualOld.length)
+        writeFileSync(resolved, result, "utf-8")
+        return { content: `Edited ${path} (whitespace-tolerant match, ${oldLines.length} lines replaced)` }
       }
     }
 

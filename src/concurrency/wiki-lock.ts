@@ -47,7 +47,13 @@ export async function acquireWikiLock(wikiRoot: string): Promise<WikiLockHandle>
     })
   } catch (e: unknown) {
     const waited = Date.now() - start
-    throw new LockTimeoutError(path.join(lockDir, ".lock"), waited)
+    // proper-lockfile throws code=ELOCKED when retries are exhausted.
+    // Anything else (EACCES, disk errors, ...) is NOT a lock timeout —
+    // rethrow the original so the real cause is visible.
+    if ((e as NodeJS.ErrnoException)?.code === "ELOCKED") {
+      throw new LockTimeoutError(path.join(lockDir, ".lock"), waited)
+    }
+    throw e
   }
 
   return {
