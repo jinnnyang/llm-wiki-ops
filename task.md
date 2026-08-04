@@ -1,7 +1,7 @@
 ---
 kind: task
-last_updated: '2026-08-03T08:57:26+00:00'
-last_verified: '2026-08-03T08:57:26+00:00'
+last_updated: '2026-08-04T02:48:19+00:00'
+last_verified: '2026-08-04T02:48:19+00:00'
 last_writer: hand-off
 last_agent: hermes-devops
 session_id: 2026-08-03-scancache-design
@@ -51,17 +51,9 @@ scanWiki 文件级增量缓存方案（A′）讨论完成，用户全部疑问�
 - 倾向不加 in-flight promise 去重（未最终拍板，见 questions.md）
 - 升级触发器：wiki 超 ~5 万页或冷扫描超 ~10s → SQLite 持久化索引，只换 scanWiki 内部实现
 
-## ⚠️ 未提交风险
+## ⚠️ 未提交风险（已解除 2026-08-04）
 
-本 session 全部代码改动未 commit，交接提交时应一并处理：
-
-```
-untracked:  src/agent/（整目录）、src/cli/graph.ts、src/cli/wiki-resolve.ts、
-            src/core/freshness.ts、tests/freshness.test.ts、
-            tests/tool-routing.test.ts、tests/typed-edges.test.ts、
-            docs/design/reason-causal-walk.md、docs/design/reason-inference.md
-modified:   src/cli/index.ts、src/core/edge-ops.ts、src/core/graph-builder.ts、
-            src/core/helpers.ts、src/core/node-ops.ts、src/index.ts、
-            src/io/frontmatter.ts、src/mcp/index.ts、src/types.ts、
-            .gitignore、package.json
-```
+~~本 session 全部代码改动未 commit~~ — 已于 2026-08-03 17:02 落进 commit
+`4845611`（33 文件 +5694 行）。2026-08-04 评审修复（孤儿 tool 消息、
+edit_file 回退、锁错误分类、注释过期）另见后续 fix commit。main 的
+upstream 已从已删除的 feat/graph-operations-api 重新指向 origin/main。

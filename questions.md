@@ -1,7 +1,7 @@
 ---
 kind: questions
-last_updated: '2026-08-03T08:59:05+00:00'
-last_verified: '2026-08-03T08:52:56+00:00'
+last_updated: '2026-08-04T02:48:19+00:00'
+last_verified: '2026-08-04T02:48:19+00:00'
 last_writer: hand-off
 last_agent: hermes-devops
 session_id: 2026-08-03-scancache-design
@@ -13,14 +13,14 @@ session_id: 2026-08-03-scancache-design
 
 - [ ] scanWiki 缓存 A′ 实施：四步计划已定（见 task.md），等用户放行。用户 2026-08-03 明确「暂不操作文件」。
 - [ ] in-flight promise 去重（同一轮并行调用的冷缓存双扫）要不要加？倾向不加（首次之后全命中，避免多余实体），未最终拍板。
-- [ ] 本 session 代码提交策略：src/agent/ 整目录 untracked + 11 个已跟踪文件已修改，建议与 hand-off 一并 commit（分 docs / feat 两个 commit 或合一，由用户定）。
 - [ ] 上下文管理参数（100K 阈值、2KB 锚定、512B 降级）是否合理？reason 真实运行未报上下文问题，但样本只有 29 轮，仍需更多运行数据。（7-31 遗留）
 - [ ] npm publish 时 `llm-wiki` bin 名是否可用？（已被 @sdsrs/llm-wiki 占用）（7-31 遗留）
 - [ ] `status: invalidated` 节点在 `read_graph`/`metrics`/`index.md` 中如何处理？（过滤？标注？）（7-31 遗留）
-
-- None.
+- [ ] renameNode 级联引用更新是否应 bump 引用方 `updated`？当前行为会把所有引用方的 freshness 核查钟重置（checked ?? updated → 每周），机械改名并非事实变更，与 §4.5 语义不一致。待拍板。
 
 ## Closed
+
+- [x] 本 session 代码提交策略 → 已提交 `4845611`（feat 合一）。2026-08-04 评审发现并修复 4 处问题（孤儿 tool 消息原子性、edit_file 回退唯一性/偏移、锁错误分类、注释过期），另见 fix commit；189/189 测试。
 
 - [x] 核心假设验证：LLM 能否可靠地通过 MCP tools 操作 wiki？→ reason 真实运行已验证：27 次 wiki 工具调用全部成功（read_graph/get_edges/get_node/add 路径打通）。ingest 尚未真跑。（7-31 Open，2026-08-03 关闭） <!-- resolved -->
 - [x] MCP client stdio 消息分帧细节？→ agent 层实现中已解决并验证（174/174 测试）。（7-31 Open，2026-08-03 关闭） <!-- resolved -->
