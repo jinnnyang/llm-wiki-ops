@@ -156,3 +156,18 @@ reason 已具备 web_search：`reason.ts` 创建本地工具时传 `{ webSearch:
 - **成本**：一跳一次 LLM 调用，1149 页 wiki 上靠轮数限制封顶（默认 30 轮 ≈ 8-10 跳）。
 - **先做单起点单链**：多起点、全图扫描不做——闭环是漫游的副产品，跑通了再说。
 - **存量边无类型**：漫游前期大量关系只能判"存疑"，这符合预期——漫游即关系富化，走得越多图的因果骨架越完整，后续机械式沿 `causes` 边走（纯代码，不用 LLM）才成为可能。
+
+## 10. 性能：scanWiki 缓存决策
+
+reason 在 1149 页 wiki 上一轮漫游 = 几十次 wiki 工具调用，每次 read 类调用都触发一次 `scanWiki` 全量扫描（findMarkdownFiles + 逐文件 readFile + frontmatter/wikilink 解析）。冷扫描 ~350ms × N 次，成为 agent loop 的主要墙钟开销。
+
+**方案 A′（文件级增量缓存，已实施）**：
+
+- 缓存放 `graph-builder.ts` 模块级（所有 scan 的唯一咽喉），`Map<resolvedWikiDir, Map<absPath, {mtimeMs, size, page}>>`
+- 只缓存 `ScannedPage[]`，不缓存 Graph——`buildGraphFromPages` 是毫秒级纯内存操作，缓存它徒增失效复杂度
+- **懒失效**：每次 scan 逐文件 stat，mtimeMs+size 一致就复用解析结果，不一致才重读。写路径完全不碰缓存——`writeFileAtomic` 会 bump mtime，所以 read-your-writes 和外部编辑都免费生效
+- 纯内存、不落盘、生命周期 = 进程生命周期。崩溃无需恢复，源头永远是 .md 文件
+- 多 wiki 隔离靠 `path.resolve(wikiDir)` 做 key；`clearScanCache(wikiDir?)` 手动清理
+- 不加 in-flight promise 去重：首次扫描之后全部命中，并发冷扫描窗口极窄，不值得引入实体
+
+**升级触发器**：wiki 超 ~5 万页或冷扫描超 ~10s 时，换 SQLite 持久化索引——只替换 `scanWiki` 内部实现，调用方无感知。

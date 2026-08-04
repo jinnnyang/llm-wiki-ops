@@ -13,7 +13,7 @@
 import * as path from "node:path"
 import { parseFrontmatter } from "../io/frontmatter.js"
 import { extractWikilinks } from "../io/wikilink.js"
-import { readFileClean, findMarkdownFiles } from "../io/fs-helpers.js"
+import { readFileClean, findMarkdownFiles, statOrNull } from "../io/fs-helpers.js"
 import { normalizeSlug } from "../utils/slug.js"
 import {
   type Graph,
@@ -64,60 +64,127 @@ interface ScannedPage {
 // ── Full scan ───────────────────────────────────────────────────────
 
 /**
+ * File-level scan cache (design: scancache A′).
+ *
+ * Module-level, keyed by resolved wikiDir so multiple wikis stay
+ * isolated. Lifecycle = process lifecycle; pure memory, never persisted
+ * (the .md files are always the source of truth).
+ *
+ * Invalidation is lazy: every scan stats each file; mtimeMs+size
+ * unchanged → reuse the cached ScannedPage, otherwise re-read + parse.
+ * The write path never touches this cache — writeFileAtomic bumps mtime,
+ * so read-your-writes and external edits both surface on the next scan
+ * for free.
+ */
+interface ScanCacheEntry {
+  mtimeMs: number
+  size: number
+  page: ScannedPage
+}
+
+const scanCache = new Map<string, Map<string, ScanCacheEntry>>()
+
+/**
+ * Drop cached scan results. No argument clears every wiki; pass a
+ * wikiDir to clear just that one (resolved, so relative paths work).
+ */
+export function clearScanCache(wikiDir?: string): void {
+  if (wikiDir === undefined) {
+    scanCache.clear()
+  } else {
+    scanCache.delete(path.resolve(wikiDir))
+  }
+}
+
+/**
  * Scan the wiki/ directory and return all pages.
  * This is the foundation for all read operations.
  */
 export async function scanWiki(wikiDir: string, wikiRoot: string): Promise<ScannedPage[]> {
   const files = await findMarkdownFiles(wikiDir)
+
+  const cacheKey = path.resolve(wikiDir)
+  let cache = scanCache.get(cacheKey)
+  if (!cache) {
+    cache = new Map()
+    scanCache.set(cacheKey, cache)
+  }
+
   const pages: ScannedPage[] = []
+  const seen = new Set<string>()
 
   for (const absPath of files) {
-    const relPath = path.relative(wikiRoot, absPath).replace(/\\/g, "/")
-    const fileName = path.basename(absPath, ".md")
-
     // Skip infrastructure files
     if (INFRA_FILES.has(path.basename(absPath))) continue
 
-    const slug = normalizeSlug(fileName)
-    const { content: rawContent } = await readFileClean(absPath)
-    const { frontmatter, body } = parseFrontmatter(rawContent)
+    seen.add(absPath)
 
-    // Infer type from directory when frontmatter is missing/broken
-    const type = inferType(frontmatter?.type as string | undefined, relPath, fileName)
+    // Cache hit: mtimeMs+size unchanged → reuse the parsed page
+    const st = await statOrNull(absPath)
+    const cached = cache.get(absPath)
+    if (st && cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+      pages.push(cached.page)
+      continue
+    }
 
-    const title = (frontmatter?.title as string) ?? fileName
-    const tags = toStringArray(frontmatter?.tags)
-    const related = parseRelatedEntries(frontmatter?.related).map(normalizeRelatedEntry)
-    const sources = toStringArray(frontmatter?.sources)
-    const created = (frontmatter?.created as string) ?? ""
-    const updated = (frontmatter?.updated as string) ?? ""
-    const as_of = (frontmatter?.as_of as string) || undefined
-    const checked = (frontmatter?.checked as string) || undefined
+    // Miss: read + parse, then cache under the fresh stat
+    const page = await parsePageFile(absPath, wikiRoot)
+    if (st) {
+      cache.set(absPath, { mtimeMs: st.mtimeMs, size: st.size, page })
+    }
+    pages.push(page)
+  }
 
-    // Extract wikilinks from body (skips code blocks)
-    const wikilinkTargets = [...new Set(extractWikilinks(body).map((t) => normalizeSlug(t)))]
-
-    pages.push({
-      slug,
-      title,
-      type,
-      tags,
-      related,
-      sources,
-      created,
-      updated,
-      as_of,
-      checked,
-      content: body,
-      path: relPath,
-      absPath,
-      wikilinkTargets,
-      status: (frontmatter?.status as string) ?? undefined,
-      superseded_by: (frontmatter?.superseded_by as string) ?? undefined,
-    })
+  // Evict entries for files that no longer exist (renames, deletions)
+  for (const absPath of cache.keys()) {
+    if (!seen.has(absPath)) cache.delete(absPath)
   }
 
   return pages
+}
+
+/** Read + parse a single page file into a ScannedPage. */
+async function parsePageFile(absPath: string, wikiRoot: string): Promise<ScannedPage> {
+  const relPath = path.relative(wikiRoot, absPath).replace(/\\/g, "/")
+  const fileName = path.basename(absPath, ".md")
+
+  const slug = normalizeSlug(fileName)
+  const { content: rawContent } = await readFileClean(absPath)
+  const { frontmatter, body } = parseFrontmatter(rawContent)
+
+  // Infer type from directory when frontmatter is missing/broken
+  const type = inferType(frontmatter?.type as string | undefined, relPath, fileName)
+
+  const title = (frontmatter?.title as string) ?? fileName
+  const tags = toStringArray(frontmatter?.tags)
+  const related = parseRelatedEntries(frontmatter?.related).map(normalizeRelatedEntry)
+  const sources = toStringArray(frontmatter?.sources)
+  const created = (frontmatter?.created as string) ?? ""
+  const updated = (frontmatter?.updated as string) ?? ""
+  const as_of = (frontmatter?.as_of as string) || undefined
+  const checked = (frontmatter?.checked as string) || undefined
+
+  // Extract wikilinks from body (skips code blocks)
+  const wikilinkTargets = [...new Set(extractWikilinks(body).map((t) => normalizeSlug(t)))]
+
+  return {
+    slug,
+    title,
+    type,
+    tags,
+    related,
+    sources,
+    created,
+    updated,
+    as_of,
+    checked,
+    content: body,
+    path: relPath,
+    absPath,
+    wikilinkTargets,
+    status: (frontmatter?.status as string) ?? undefined,
+    superseded_by: (frontmatter?.superseded_by as string) ?? undefined,
+  }
 }
 
 /**
