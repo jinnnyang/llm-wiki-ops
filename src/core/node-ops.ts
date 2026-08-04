@@ -477,10 +477,12 @@ export async function renameNode(
               : { ...r, slug: newNorm }
             : r,
         )
-        // Rebuild with updated related
+        // Rebuild with updated related.
+        // NOTE: cascade rewrites do NOT bump `updated` on referring pages —
+        // a mechanical wikilink/related[] fix is not a fact change, and
+        // bumping would reset the freshness clock (checked ?? updated).
         const fmParsed = (parsed.frontmatter as Record<string, unknown>)
         fmParsed.related = newRelated
-        fmParsed.updated = today()
         updated = composePage(fmParsed, parsed.body)
       }
     }
@@ -588,9 +590,10 @@ export async function deleteNode(
       const hasRef = related.some((r) => normalizeSlug(relatedEntrySlug(r)) === norm)
       if (hasRef) {
         const newRelated = related.filter((r) => normalizeSlug(relatedEntrySlug(r)) !== norm)
+        // No `updated` bump on referring pages — cascade cleanup is
+        // mechanical, not a fact change (freshness clock stays intact).
         const fmParsed = parsed.frontmatter as Record<string, unknown>
         fmParsed.related = newRelated
-        fmParsed.updated = today()
         updated = composePage(fmParsed, parsed.body)
       }
     }

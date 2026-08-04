@@ -203,6 +203,21 @@ describe("renameNode", () => {
   it("throws RENAME_TARGET_EXISTS when target taken", async () => {
     await expect(wiki.renameNode("asml", "nvidia")).rejects.toThrow(WikiGraphError)
   })
+
+  it("cascade rewrite does NOT bump updated on referring pages", async () => {
+    // semiconductor-outlook has related: ["hbm", "asml"], updated: 2025-05-01
+    await wiki.renameNode("asml", "asml-holding")
+
+    const semi = await wiki.getNode("semiconductor-outlook")
+    expect(semi!.related).toContain("asml-holding") // related[] rewritten
+    expect(semi!.related).not.toContain("asml")
+    // Mechanical rewrite must not touch the freshness clock
+    expect(semi!.updated).toBe("2025-05-01")
+
+    // The renamed node itself IS a fact change — its own updated is bumped
+    const renamed = await wiki.getNode("asml-holding")
+    expect(renamed!.updated).not.toBe("2025-03-01")
+  })
 })
 
 describe("deleteNode", () => {
@@ -254,6 +269,15 @@ describe("deleteNode", () => {
       "utf-8",
     )
     expect(indexContent).not.toContain("[[asml]]")
+  })
+
+  it("cascade cleanup does NOT bump updated on referring pages", async () => {
+    // semiconductor-outlook has related: ["hbm", "asml"], updated: 2025-05-01
+    await wiki.deleteNode("asml")
+
+    const semi = await wiki.getNode("semiconductor-outlook")
+    expect(semi!.related).not.toContain("asml") // related[] entry removed
+    expect(semi!.updated).toBe("2025-05-01") // freshness clock untouched
   })
 })
 

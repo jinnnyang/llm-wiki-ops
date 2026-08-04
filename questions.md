@@ -16,9 +16,10 @@ session_id: 2026-08-03-scancache-design
 - [ ] 上下文管理参数（100K 阈值、2KB 锚定、512B 降级）是否合理？reason 真实运行未报上下文问题，但样本只有 29 轮，仍需更多运行数据。（7-31 遗留）
 - [ ] npm publish 时 `llm-wiki` bin 名是否可用？（已被 @sdsrs/llm-wiki 占用）（7-31 遗留）
 - [ ] `status: invalidated` 节点在 `read_graph`/`metrics`/`index.md` 中如何处理？（过滤？标注？）（7-31 遗留）
-- [ ] renameNode 级联引用更新是否应 bump 引用方 `updated`？当前行为会把所有引用方的 freshness 核查钟重置（checked ?? updated → 每周），机械改名并非事实变更，与 §4.5 语义不一致。待拍板。
 
 ## Closed
+
+- [x] renameNode 级联引用更新是否应 bump 引用方 `updated`？→ 用户拍板 B（2026-08-04）：级联改写（rename/delete 的引用方 wikilink + related[] 修正）视为机械操作，不 bump 引用方 `updated`，freshness 钟（checked ?? updated）不被扰动。被改名/删除节点自身的 `updated` 仍 bump。§16 决策 20 的一个记录在案的特例，见 node-ops.ts 两处 cascade 注释。 <!-- resolved -->
 
 - [x] 本 session 代码提交策略 → 已提交 `4845611`（feat 合一）。2026-08-04 评审发现并修复 4 处问题（孤儿 tool 消息原子性、edit_file 回退唯一性/偏移、锁错误分类、注释过期），另见 fix commit；189/189 测试。
 
