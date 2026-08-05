@@ -23,7 +23,7 @@
  *   the node returns to weekly observation automatically (§4.5).
  */
 
-import { scanWiki } from "./graph-builder.js"
+import { scanWiki, type ScannedPage } from "./graph-builder.js"
 import type { PageType } from "../types.js"
 
 // ── Constants (all in days) ─────────────────────────────────────────
@@ -147,14 +147,24 @@ export async function scanFreshness(
   wikiRoot: string,
   options?: ScanFreshnessOptions,
 ): Promise<FreshnessScanResult> {
+  const pages = await scanWiki(wikiDir, wikiRoot)
+  return scanFreshnessFromPages(pages, options)
+}
+
+/**
+ * scanFreshness core, operating on an already-scanned page list.
+ * Shared by the disk path (scanFreshness) and the resident graph path.
+ */
+export function scanFreshnessFromPages(
+  pages: ScannedPage[],
+  options?: ScanFreshnessOptions,
+): FreshnessScanResult {
   const opts = options ?? {}
   const today = opts.today ?? new Date().toISOString().slice(0, 10)
   const todayMs = parseDate(today)
   if (todayMs === null) {
     throw new Error(`scanFreshness: invalid today date "${opts.today}" (expected YYYY-MM-DD)`)
   }
-
-  const pages = await scanWiki(wikiDir, wikiRoot)
 
   const due: FreshnessEntry[] = []
   const upcoming: FreshnessEntry[] = []

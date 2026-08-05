@@ -458,7 +458,7 @@ my-wiki/
 
 ### Wiki root 解析
 
-与现有 CLI 一致：`--wiki <path>` > `WIKI_ROOT` 环境变量 > 报错。
+与现有 CLI 一致：`--wiki <path>` > `SELECTED_WIKI` 环境变量 > 报错。（2026-08 更新：原 `WIKI_ROOT` 已由 `SELECTED_WIKI` 取代，见 resident-graph.md §11。）
 
 ### 高级命令通用选项
 
@@ -522,7 +522,7 @@ my-wiki/
 }
 ```
 
-wiki-graph-mcp 不需要配置——agent 启动时自动连接，wiki root 从 `--wiki` / `WIKI_ROOT` 取。
+wiki-graph-mcp 不需要配置——agent 启动时自动连接，wiki root 通过 spawn env `SELECTED_WIKI` 绑定（原 `WIKI_ROOT`，已更名）。
 
 ## 7. 不动的部分
 

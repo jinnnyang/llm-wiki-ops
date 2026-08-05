@@ -245,6 +245,20 @@ export interface WikiGraphOptions {
   maintainLog?: boolean // default false
   strictVerify?: boolean // default false (sha256 in optimistic check)
   slugStrategy?: "preserve-cjk" | "pinyin" | "ascii-only" // v1: preserve-cjk only
+  /**
+   * Resident in-memory graph (design: resident-graph.md §4.1).
+   * Reads trust the in-memory graph (pages + adjacency + slug index) built
+   * once on first read; writes still go through transactions to disk and
+   * then incrementally rebuild the in-memory state. Default false.
+   */
+  resident?: boolean
+  /**
+   * Trust window for the resident graph, in ms. Default 30_000.
+   *   0  = never revalidate (single-process owns the wiki, e.g. reason agent)
+   *   >0 = after the window expires, the next read revalidates from disk
+   * Ignored when resident=false. (design: resident-graph.md §5.2)
+   */
+  trustWindowMs?: number
 }
 
 // ── Type → directory mapping ────────────────────────────────────────

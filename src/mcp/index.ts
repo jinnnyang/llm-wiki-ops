@@ -2,10 +2,16 @@
 /**
  * wiki-graph-mcp — MCP server for llm-wiki-ops.
  *
- * Design doc: §11.3, §11.4
+ * Design doc: resident-graph.md §6 (resident + LRU), §11 (naming unification);
+ * agent-layer.md §11.3, §11.4 (original MCP design).
  *
  * Single instance + default wiki + optional per-tool override.
  * 13 tools exposed. cleanup() called once at server.init().
+ *
+ * Default wiki resolution (§11.2):
+ *   --wiki <path-or-slug>  >  SELECTED_WIKI env  >  WIKI_ROOT env (deprecated)  >  error
+ * Slug values resolve against WIKIS_ROOT via the same pure resolver the CLI
+ * uses (cli/wiki-resolve.ts), so "same shell, CLI works, MCP works".
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
@@ -16,39 +22,40 @@ import {
 } from "@modelcontextprotocol/sdk/types.js"
 import { WikiGraph } from "../index.js"
 import { WikiGraphError } from "../utils/errors.js"
+import { resolveDefaultWikiRoot } from "./resolve.js"
+import { WikiCache } from "./wiki-cache.js"
 
 // ── Configuration ───────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
-let defaultWikiRoot: string | undefined
+let cliWiki: string | undefined
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--wiki" && args[i + 1]) {
-    defaultWikiRoot = args[i + 1]
+    cliWiki = args[i + 1]
     i++
   }
 }
 
-if (!defaultWikiRoot) {
-  defaultWikiRoot = process.env.WIKI_ROOT
-}
+const resolved = resolveDefaultWikiRoot(cliWiki, process.env)
+if (resolved.warning) console.error(resolved.warning)
 
-if (!defaultWikiRoot) {
-  console.error("Usage: wiki-graph-mcp --wiki <path>")
-  console.error("  or set WIKI_ROOT environment variable")
+if (!resolved.root) {
+  console.error("Usage: wiki-graph-mcp --wiki <path-or-slug>")
+  console.error("  or set SELECTED_WIKI (slug requires WIKIS_ROOT; see: llm-wiki use)")
+  console.error("  (WIKI_ROOT is deprecated and ignored if SELECTED_WIKI is set)")
   process.exit(1)
 }
 
-// ── Wiki instance cache (per wiki_root override) ────────────────────
+const defaultWikiRoot: string = resolved.root
 
-const wikiCache = new Map<string, WikiGraph>()
+// ── Wiki instance cache (per selected_wiki override), LRU-capped ────
 
-function getWiki(wikiRoot?: string): WikiGraph {
-  const root = wikiRoot ?? defaultWikiRoot!
-  if (!wikiCache.has(root)) {
-    wikiCache.set(root, new WikiGraph(root))
-  }
-  return wikiCache.get(root)!
+const wikiCache = new WikiCache()
+
+function getWiki(selectedWiki?: string): WikiGraph {
+  const root = selectedWiki ?? defaultWikiRoot
+  return wikiCache.get(root)
 }
 
 // ── Server setup ────────────────────────────────────────────────────
@@ -60,9 +67,10 @@ const server = new Server(
 
 // ── Tool definitions ────────────────────────────────────────────────
 
-const wikiRootProp = {
+const selectedWikiProp = {
   type: "string" as const,
-  description: "Wiki root directory. Omit to use the default (--wiki / WIKI_ROOT).",
+  description:
+    "Wiki root path or slug to operate on (overrides the server default). Omit to use the default (--wiki / SELECTED_WIKI).",
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -73,7 +81,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "Returns a lightweight overview of the wiki: total counts, per-type breakdown, top tags, highest-degree nodes. Guaranteed <2KB. Call this FIRST when connecting to an unknown wiki — never start with an unfiltered read_graph.",
       inputSchema: {
         type: "object",
-        properties: { wiki_root: wikiRootProp },
+        properties: { selected_wiki: selectedWikiProp },
         additionalProperties: false,
       },
     },
@@ -90,7 +98,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           center: { type: "string", description: "BFS center slug" },
           k: { type: "number", description: "BFS depth (default 1, max 5)" },
           limit: { type: "number", description: "Max nodes (default 200, max 500)" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         additionalProperties: false,
       },
@@ -102,7 +110,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {
           slug: { type: "string", description: "Page slug" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         required: ["slug"],
         additionalProperties: false,
@@ -117,7 +125,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           slug: { type: "string", description: "Page slug" },
           k: { type: "number", description: "BFS depth (default 1, max 5)" },
           limit: { type: "number", description: "Max edges (default 100, max 500)" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         required: ["slug"],
         additionalProperties: false,
@@ -139,7 +147,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           as_of: { type: "string", description: "Fact clock YYYY-MM-DD: when the described state held / event happened (extract, never invent)" },
           on_slug_conflict: { type: "string", enum: ["append", "error"], description: "Default: append" },
           dry_run: { type: "boolean", description: "Preview without writing" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         required: ["title"],
         additionalProperties: false,
@@ -163,7 +171,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           as_of: { type: "string", description: "Fact clock YYYY-MM-DD (see add_node.as_of)" },
           checked: { type: "string", description: "Verification clock YYYY-MM-DD (check agent)" },
           dry_run: { type: "boolean" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         required: ["slug"],
         additionalProperties: false,
@@ -179,7 +187,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           old_slug: { type: "string" },
           new_slug: { type: "string" },
           dry_run: { type: "boolean" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         required: ["old_slug", "new_slug"],
         additionalProperties: false,
@@ -195,7 +203,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           slug: { type: "string" },
           dangling_refs: { type: "string", enum: ["strikethrough", "plain-text", "remove"] },
           dry_run: { type: "boolean" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         required: ["slug"],
         additionalProperties: false,
@@ -213,7 +221,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           context: { type: "string", description: "Section heading for wikilink insertion" },
           relation: { type: "string", description: "Edge type (recommended: is_a, instance_of, causes, contradicts, explains, superseded_by, related)" },
           dry_run: { type: "boolean" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         required: ["source", "target"],
         additionalProperties: false,
@@ -229,7 +237,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           source: { type: "string" },
           target: { type: "string" },
           dry_run: { type: "boolean" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         required: ["source", "target"],
         additionalProperties: false,
@@ -240,7 +248,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: "Full rebuild of index.md. Preserves custom (non-type) sections.",
       inputSchema: {
         type: "object",
-        properties: { wiki_root: wikiRootProp },
+        properties: { selected_wiki: selectedWikiProp },
         additionalProperties: false,
       },
     },
@@ -250,7 +258,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "Compute graph health metrics: topology (degree distribution, hubs, connected components, fragmentation), source overlap (near-duplicate detection), cross-type edge matrix, and type balance. Read-only full scan. Use after get_stats to diagnose structural problems before bulk operations.",
       inputSchema: {
         type: "object",
-        properties: { wiki_root: wikiRootProp },
+        properties: { selected_wiki: selectedWikiProp },
         additionalProperties: false,
       },
     },
@@ -263,7 +271,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           today: { type: "string", description: "Override today YYYY-MM-DD (default: current UTC date)" },
           upcoming_days: { type: "number", description: "Also return nodes due within this many days" },
-          wiki_root: wikiRootProp,
+          selected_wiki: selectedWikiProp,
         },
         additionalProperties: false,
       },
@@ -275,10 +283,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params
-  const wikiRoot = args?.wiki_root as string | undefined
+  const selectedWiki = args?.selected_wiki as string | undefined
 
   try {
-    const wiki = getWiki(wikiRoot)
+    const wiki = getWiki(selectedWiki)
     let result: unknown
 
     switch (name) {

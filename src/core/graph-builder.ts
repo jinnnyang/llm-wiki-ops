@@ -42,7 +42,7 @@ const MAX_K = 5
 
 // ── Internal page record (full scan result) ─────────────────────────
 
-interface ScannedPage {
+export interface ScannedPage {
   slug: string
   title: string
   type: PageType
@@ -141,6 +141,47 @@ export async function scanWiki(wikiDir: string, wikiRoot: string): Promise<Scann
   }
 
   return pages
+}
+
+/**
+ * Incremental rescan after a write (resident graph support, design:
+ * resident-graph.md §4.4).
+ *
+ * Re-reads ONLY the touched files, updates/removes their A′ cache
+ * entries, and returns the full page list from cache — no stat storm
+ * over untouched files. Deleted files (rename source, delete_node)
+ * drop out of the cache. INFRA_FILES (index.md/log.md) are skipped —
+ * they are not graph nodes.
+ *
+ * Returns null when the cache is empty (never scanned, or externally
+ * cleared) — the caller falls back to a full scanWiki.
+ */
+export async function rescanTouched(
+  wikiDir: string,
+  wikiRoot: string,
+  touchedAbsPaths: string[],
+): Promise<ScannedPage[] | null> {
+  const cacheKey = path.resolve(wikiDir)
+  const cache = scanCache.get(cacheKey)
+  if (!cache || cache.size === 0) return null
+
+  for (const absPath of touchedAbsPaths) {
+    if (INFRA_FILES.has(path.basename(absPath))) continue
+    if (!absPath.endsWith(".md")) continue
+
+    const st = await statOrNull(absPath)
+    if (!st) {
+      cache.delete(absPath) // deleted (rename source / delete_node)
+      continue
+    }
+    const page = await parsePageFile(absPath, wikiRoot)
+    cache.set(absPath, { mtimeMs: st.mtimeMs, size: st.size, page })
+  }
+
+  // Deterministic order (matches scanWiki's sorted findMarkdownFiles)
+  return [...cache.values()]
+    .sort((a, b) => (a.page.absPath < b.page.absPath ? -1 : 1))
+    .map((e) => e.page)
 }
 
 /** Read + parse a single page file into a ScannedPage. */
@@ -318,9 +359,29 @@ export async function readGraph(
   wikiRoot: string,
   options?: ReadGraphOptions,
 ): Promise<Graph> {
-  const startTime = Date.now()
   const allPages = await scanWiki(wikiDir, wikiRoot)
-  const fullGraph = buildGraphFromPages(allPages)
+  return readGraphFromPages(allPages, options)
+}
+
+/**
+ * readGraph core, operating on an already-scanned page list.
+ * Shared by the disk path (readGraph) and the resident graph path.
+ */
+export function readGraphFromPages(allPages: ScannedPage[], options?: ReadGraphOptions): Graph {
+  return readGraphFromGraph(buildGraphFromPages(allPages), allPages, options)
+}
+
+/**
+ * readGraph core, operating on a prebuilt full graph.
+ * Shared by readGraphFromPages and the resident graph path — resident callers
+ * pass the cached Graph so reads never rebuild it (design: resident-graph.md §4.3).
+ */
+export function readGraphFromGraph(
+  fullGraph: Graph,
+  allPages: ScannedPage[],
+  options?: ReadGraphOptions,
+): Graph {
+  const startTime = Date.now()
 
   const limit = Math.min(options?.limit ?? READ_GRAPH_DEFAULT_LIMIT, READ_GRAPH_MAX_LIMIT)
   const k = Math.min(options?.k ?? 1, MAX_K)
@@ -398,10 +459,19 @@ export async function getNode(
   slug: string,
 ): Promise<WikiPage | null> {
   const pages = await scanWiki(wikiDir, wikiRoot)
+  return getNodeFromPages(pages, slug)
+}
+
+/** getNode core, operating on an already-scanned page list. */
+export function getNodeFromPages(pages: ScannedPage[], slug: string): WikiPage | null {
   const norm = normalizeSlug(slug)
   const page = pages.find((p) => p.slug === norm)
   if (!page) return null
+  return pageToWikiPage(page)
+}
 
+/** Project a ScannedPage into the public WikiPage shape. */
+export function pageToWikiPage(page: ScannedPage): WikiPage {
   return {
     slug: page.slug,
     title: page.title,
@@ -426,16 +496,47 @@ export async function getEdges(
   slug: string,
   options?: GetEdgesOptions,
 ): Promise<GetEdgesResult> {
-  const norm = normalizeSlug(slug)
   const pages = await scanWiki(wikiDir, wikiRoot)
+  return getEdgesFromPages(pages, slug, options)
+}
+
+/** getEdges core, operating on an already-scanned page list. */
+export function getEdgesFromPages(
+  pages: ScannedPage[],
+  slug: string,
+  options?: GetEdgesOptions,
+): GetEdgesResult {
   const graph = buildGraphFromPages(pages)
+  return getEdgesFromAdjacency(buildAdjacencyFromGraph(graph.edges), slug, options)
+}
+
+/**
+ * getEdges core, operating on a prebuilt adjacency list.
+ * Shared by the disk path (getEdgesFromPages) and the resident graph
+ * path (O(degree) for k=1 instead of O(E) filtering).
+ */
+export function getEdgesFromAdjacency(
+  adj: Map<string, GraphEdge[]>,
+  slug: string,
+  options?: GetEdgesOptions,
+): GetEdgesResult {
+  const norm = normalizeSlug(slug)
 
   const k = Math.min(options?.k ?? 1, MAX_K)
   const limit = Math.min(options?.limit ?? GET_EDGES_DEFAULT_LIMIT, GET_EDGES_MAX_LIMIT)
 
   if (k === 1) {
-    const inbound = graph.edges.filter((e) => e.target === norm)
-    const outbound = graph.edges.filter((e) => e.source === norm)
+    // Dedup: self-loops appear twice in the undirected adjacency list
+    // (pushed once as source, once as target).
+    const seen = new Set<GraphEdge>()
+    const inbound: GraphEdge[] = []
+    const outbound: GraphEdge[] = []
+    for (const edge of adj.get(norm) ?? []) {
+      if (seen.has(edge)) continue
+      seen.add(edge)
+      if (edge.target === norm) inbound.push(edge)
+      if (edge.source === norm) outbound.push(edge)
+    }
 
     if (inbound.length + outbound.length > limit) {
       throw new ResultTooLargeError({
@@ -450,7 +551,6 @@ export async function getEdges(
   }
 
   // k > 1: BFS with depth
-  const adj = buildAdjacency(graph.edges)
   const edgesWithDepth: Array<GraphEdge & { depth: number }> = []
   const visited = new Set<string>([norm])
   let frontier = [norm]
@@ -485,7 +585,19 @@ export async function getEdges(
 
 export async function getStats(wikiDir: string, wikiRoot: string): Promise<WikiStats> {
   const pages = await scanWiki(wikiDir, wikiRoot)
-  const graph = buildGraphFromPages(pages)
+  return getStatsFromPages(pages)
+}
+
+/** getStats core, operating on an already-scanned page list. */
+export function getStatsFromPages(pages: ScannedPage[]): WikiStats {
+  return getStatsFromGraph(buildGraphFromPages(pages))
+}
+
+/**
+ * getStats core, operating on a prebuilt full graph.
+ * Shared by getStatsFromPages and the resident graph path (no rebuild).
+ */
+export function getStatsFromGraph(graph: Graph): WikiStats {
 
   // Type counts (known types first, then alphabetical for unknown)
   const typeCounts: Record<string, number> = {}
@@ -537,8 +649,11 @@ export async function getStats(wikiDir: string, wikiRoot: string): Promise<WikiS
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** Build an undirected adjacency list from graph edges. O(E). */
-function buildAdjacency(edges: GraphEdge[]): Map<string, GraphEdge[]> {
+/**
+ * Build an undirected adjacency list from graph edges. O(E).
+ * Exported for the resident graph path (design: resident-graph.md §4.2).
+ */
+export function buildAdjacencyFromGraph(edges: GraphEdge[]): Map<string, GraphEdge[]> {
   const adj = new Map<string, GraphEdge[]>()
   for (const edge of edges) {
     if (!adj.has(edge.source)) adj.set(edge.source, [])
@@ -547,6 +662,11 @@ function buildAdjacency(edges: GraphEdge[]): Map<string, GraphEdge[]> {
     adj.get(edge.target)!.push(edge)
   }
   return adj
+}
+
+/** Build an undirected adjacency list from graph edges. O(E). */
+function buildAdjacency(edges: GraphEdge[]): Map<string, GraphEdge[]> {
+  return buildAdjacencyFromGraph(edges)
 }
 
 function bfsNeighborhood(graph: Graph, center: string, k: number): Set<string> {

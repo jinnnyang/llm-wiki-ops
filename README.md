@@ -22,11 +22,17 @@ npm install llm-wiki-ops
 
 ## CLI
 
-Wiki root is resolved from `--wiki <path>` or the `WIKI_ROOT` environment variable — no need to repeat it on every command.
+Wiki root is resolved from `--wiki <path>` or the `SELECTED_WIKI` environment variable — no need to repeat it on every command.
 
 ```bash
-# Set once, use everywhere
-export WIKI_ROOT=/path/to/my-wiki
+# Set once, use everywhere (path or a slug under WIKIS_ROOT)
+export SELECTED_WIKI=/path/to/my-wiki
+
+# Or manage multiple wikis: set WIKIS_ROOT to the directory holding them,
+# then select one (also enables cross-wiki search on read commands)
+export WIKIS_ROOT=/path/to/wikis
+llm-wiki-ops use my-wiki      # writes SELECTED_WIKI=my-wiki
+llm-wiki-ops status           # show current resolution
 
 # Add a node
 llm-wiki-ops add-node --title "My Page" --type concept
@@ -53,6 +59,17 @@ llm-wiki-ops --wiki /other/wiki stats
 wiki-graph-mcp --wiki ./my-wiki
 ```
 
+Default wiki resolution (when `--wiki` is omitted):
+
+```
+--wiki <path-or-slug>  >  SELECTED_WIKI env  >  WIKI_ROOT env (deprecated)  >  error
+```
+
+`SELECTED_WIKI` is the same variable the CLI reads, so a shell where
+`llm-wiki-ops` works also works for the MCP server. It accepts a full path
+or a slug resolved against `WIKIS_ROOT`. `WIKI_ROOT` still works as a
+fallback but prints a deprecation warning.
+
 Configure in your MCP client:
 
 ```json
@@ -65,6 +82,22 @@ Configure in your MCP client:
   }
 }
 ```
+
+Or bind the default wiki via env instead of `--wiki`:
+
+```json
+{
+  "mcpServers": {
+    "llm-wiki": {
+      "command": "wiki-graph-mcp",
+      "env": { "SELECTED_WIKI": "/path/to/wiki" }
+    }
+  }
+}
+```
+
+Individual tools also accept an optional `selected_wiki` argument to target a
+different wiki for that one call (a full path or a slug under `WIKIS_ROOT`).
 
 ## Library
 

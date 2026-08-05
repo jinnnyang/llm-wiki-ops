@@ -39,8 +39,10 @@ export function isValidWiki(dir: string): boolean {
 }
 
 /** WIKIS_ROOT is valid if it exists and is a directory. */
-export function getWikisRoot(): string | null {
-  const root = process.env.WIKIS_ROOT
+export function getWikisRoot(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const root = env.WIKIS_ROOT
   if (!root) return null
   try {
     if (statSync(root).isDirectory()) return root
@@ -70,37 +72,63 @@ function looksLikeSlug(value: string): boolean {
   return true
 }
 
-/** Resolve a slug or path to an absolute wiki root path. */
-function resolveToPath(value: string, wikisRoot: string | null): string {
+export type ResolveWikiResult =
+  | { ok: true; path: string }
+  | { ok: false; error: string }
+
+/**
+ * Pure resolver: slug or path → absolute wiki root path.
+ *
+ * Never exits the process — returns { ok: false, error } instead, so the
+ * MCP server can reuse the exact same resolution semantics as the CLI
+ * (design: resident-graph.md §11.2).
+ *
+ * @param value      --wiki / SELECTED_WIKI value (slug or path)
+ * @param wikisRoot  WIKIS_ROOT directory (required for slug resolution)
+ */
+export function resolveWikiPath(value: string, wikisRoot: string | null): ResolveWikiResult {
   if (looksLikeSlug(value)) {
     if (!wikisRoot) {
-      console.error(
-        `Error: "${value}" looks like a slug, but WIKIS_ROOT is not set or invalid.\n` +
-        `  Slug resolution requires a valid WIKIS_ROOT directory.\n` +
-        `  Use a full path instead, or set WIKIS_ROOT.`,
-      )
-      process.exit(1)
+      return {
+        ok: false,
+        error:
+          `"${value}" looks like a slug, but WIKIS_ROOT is not set or invalid.\n` +
+          `  Slug resolution requires a valid WIKIS_ROOT directory.\n` +
+          `  Use a full path instead, or set WIKIS_ROOT.`,
+      }
     }
     const resolved = join(wikisRoot, value)
     if (!isValidWiki(resolved)) {
-      console.error(
-        `Error: "${value}" resolved to "${resolved}" but it is not a valid wiki.\n` +
-        `  A valid wiki must have wiki/, raw/, and wiki/index.md.`,
-      )
-      process.exit(1)
+      return {
+        ok: false,
+        error:
+          `"${value}" resolved to "${resolved}" but it is not a valid wiki.\n` +
+          "  A valid wiki must have wiki/, raw/, and wiki/index.md.",
+      }
     }
-    return resolved
+    return { ok: true, path: resolved }
   }
   // Full path — validate early
   const resolved = resolve(value)
   if (!isValidWiki(resolved)) {
-    console.error(
-      `Error: "${resolved}" is not a valid wiki.\n` +
-      `  A valid wiki must have wiki/, raw/, and wiki/index.md.`,
-    )
+    return {
+      ok: false,
+      error:
+        `"${resolved}" is not a valid wiki.\n` +
+        "  A valid wiki must have wiki/, raw/, and wiki/index.md.",
+    }
+  }
+  return { ok: true, path: resolved }
+}
+
+/** Resolve a slug or path to an absolute wiki root path (CLI wrapper: exits on error). */
+function resolveToPath(value: string, wikisRoot: string | null): string {
+  const r = resolveWikiPath(value, wikisRoot)
+  if (!r.ok) {
+    console.error(`Error: ${r.error}`)
     process.exit(1)
   }
-  return resolved
+  return r.path
 }
 
 // ── Main resolver ───────────────────────────────────────────────────

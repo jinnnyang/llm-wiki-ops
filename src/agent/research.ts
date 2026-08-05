@@ -187,7 +187,7 @@ export async function runResearch(options: ResearchOptions): Promise<AgentResult
       transport: "stdio",
       command: "node",
       args: [join(import.meta.dirname, "..", "mcp", "index.js")],
-      env: { WIKI_ROOT: options.wikiRoot },
+      env: { SELECTED_WIKI: options.wikiRoot },
     })
 
     // Add optional search servers
