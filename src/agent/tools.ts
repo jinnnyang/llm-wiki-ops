@@ -318,7 +318,7 @@ async function toolWebSearch(args: Record<string, unknown>): Promise<LocalToolRe
 
 // ── Registry factory ─────────────────────────────────────────────────
 
-export function createLocalTools(wikiRoot: string, opts?: { webSearch?: boolean }): LocalToolRegistry {
+export function createLocalTools(wikiRoot: string, opts?: { webSearch?: boolean; readOnly?: boolean }): LocalToolRegistry {
   const definitions: ToolDefinition[] = [
     {
       type: "function",
@@ -412,11 +412,18 @@ export function createLocalTools(wikiRoot: string, opts?: { webSearch?: boolean 
     }
   }
 
-  const WRITE_TOOLS = new Set(["write_file", "edit_file"])
+  // Read-only agents (e.g. reason report mode) never see write tools;
+  // the execute() guard is defense in depth against hallucinated calls.
+  const exposedDefinitions = opts?.readOnly
+    ? definitions.filter((d) => d.function.name !== "write_file" && d.function.name !== "edit_file")
+    : definitions
 
   return {
-    definitions,
+    definitions: exposedDefinitions,
     async execute(name: string, args: Record<string, unknown>): Promise<LocalToolResult> {
+      if (opts?.readOnly && (name === "write_file" || name === "edit_file")) {
+        return { content: `${name} is disabled in read-only mode`, isError: true }
+      }
       switch (name) {
         case "read_file":
           return toolReadFile(wikiRoot, args)

@@ -21,7 +21,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import { WikiGraph } from "../index.js"
-import { WikiGraphError } from "../utils/errors.js"
+import { ResultTooLargeError, WikiGraphError } from "../utils/errors.js"
 import { resolveDefaultWikiRoot } from "./resolve.js"
 import { WikiCache } from "./wiki-cache.js"
 
@@ -413,9 +413,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             slug: e.slug,
             targetSlug: e.targetSlug,
             detail: e.detail,
-            ...(e.code === "RESULT_TOO_LARGE" ? {
-              matchedCount: (e as any).matchedCount,
-              suggestions: (e as any).suggestions,
+            ...(e instanceof ResultTooLargeError ? {
+              matchedCount: e.matchedCount,
+              suggestions: e.suggestions,
             } : {}),
           }, null, 2),
         }],

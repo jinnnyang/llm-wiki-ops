@@ -151,7 +151,7 @@ const PURGE_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "wiki.update_node",
-      description: "Update a node. Use status='invalidated' and superseded_by to mark outdated nodes.",
+      description: "Update a node. Use status='invalidated' and superseded_by to mark outdated nodes. WARNING: content is a WHOLE-PAGE replacement, not a patch — read the page first (wiki.get_node), then pass the complete updated body including all existing content.",
       parameters: {
         type: "object",
         properties: {

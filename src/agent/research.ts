@@ -72,8 +72,23 @@ const RESEARCH_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "wiki.scan_freshness",
+      description: "Pure-code scan (zero LLM): list nodes due for fact-checking per the exponential-backoff schedule (checked clock, as_of-based interval). Use this FIRST when the query is about staleness — it tells you exactly which nodes are overdue, sorted by overdueDays desc.",
+      parameters: {
+        type: "object",
+        properties: {
+          today: { type: "string", description: "Override today YYYY-MM-DD (default: current UTC date)" },
+          upcoming_days: { type: "number", description: "Also return nodes due within this many days" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "wiki.update_node",
-      description: "Update a node's content, tags, related, etc.",
+      description: "Update a node's attributes. WARNING: content is a WHOLE-PAGE replacement, not a patch — read the page first (wiki.get_node), then pass the complete updated body including all existing content. When a fact changes, reset as_of to the new fact's effective date (restarts its freshness backoff) and set checked to today.",
       parameters: {
         type: "object",
         properties: {
@@ -83,6 +98,10 @@ const RESEARCH_TOOLS: ToolDefinition[] = [
           tags: { type: "array", items: { type: "string" } },
           related: { type: "array", items: { type: "string" } },
           sources: { type: "array", items: { type: "string" } },
+          status: { type: "string", description: "'active' (default) or 'invalidated'" },
+          superseded_by: { type: "string", description: "Slug of replacement node (when status=invalidated)" },
+          as_of: { type: "string", description: "Fact clock YYYY-MM-DD: reset to the date the NEW fact became true" },
+          checked: { type: "string", description: "Verification clock YYYY-MM-DD: set to today after verifying" },
         },
         required: ["slug"],
       },
@@ -148,6 +167,8 @@ Given a research query, explore the existing wiki subgraph, identify gaps or sta
 ## Rules
 - When updating a node, ALWAYS note WHY you updated it. Append a section like:
   > **Updated YYYY-MM-DD**: <reason>. Source: <URL or reference>.
+- When a fact changes, reset as_of to the new fact's effective date (this restarts its freshness backoff) and set checked to today.
+- If the query is about staleness/refresh, call wiki.scan_freshness FIRST to get the due-for-checking list instead of scanning by hand.
 - Add new nodes only for genuinely new concepts/entities not already covered.
 - Do NOT duplicate existing nodes — check with read_graph/get_node first.
 - Use add_edge to connect new information to the existing graph.
@@ -155,6 +176,7 @@ Given a research query, explore the existing wiki subgraph, identify gaps or sta
 - The wiki may have 1000+ nodes. Use read_graph with filters to navigate. Never call read_graph without filters.
 - Prefer updating existing nodes over creating new ones when the topic overlaps.
 - If web_search is available, use it to find current information, verify facts, or fill knowledge gaps. Always cite the source URL.
+- If web_search is NOT available, do not fabricate external sources — skip external corroboration, judge on wiki evidence alone, and note in the summary that external verification was unavailable.
 
 ## Output
 End with a summary: what you updated, what you created, what gaps remain.`
@@ -212,6 +234,15 @@ Explore the wiki subgraph related to this query. Identify stale or missing infor
         timeoutMs: options.timeoutMs ?? 600_000,
         llmConfig,
         dryRun: options.dryRun,
+        conclusion: {
+          // The deliverable is the update/creation summary, already written
+          // as the final message — don't bury it under a 300-word round.
+          skipIfDeliverable: true,
+          // Fallback when the final message is too thin to be the summary:
+          // reconstruct it from the tool log, no word cap.
+          prompt:
+            "You have finished your research work. Write the most complete summary you can from everything you found and did: which nodes you updated (and why), which nodes/edges you created, and what gaps remain. Include the sources and dates you recorded. No word limit. No tool calls. Write in the same language as the user's query.",
+        },
       },
       userMessage,
       mcp,

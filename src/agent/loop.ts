@@ -11,6 +11,19 @@ import { DryRunExecutor, isWriteTool, createPreWriteSnapshot, type SnapshotResul
 
 // ── Types ────────────────────────────────────────────────────────────
 
+export interface ConclusionConfig {
+  /** Override the default 300-word conclusion prompt. */
+  prompt?: string
+  /**
+   * When true, skip the conclusion round if the agent already produced a
+   * substantial final message — the deliverable is in hand, and a summary /
+   * rescue round would only add cost and risk drifting from it.
+   */
+  skipIfDeliverable?: boolean
+  /** Minimum finalMessage length that counts as a deliverable (default 500). */
+  deliverableMinChars?: number
+}
+
 export interface AgentConfig {
   systemPrompt: string
   tools: ToolDefinition[]
@@ -19,6 +32,8 @@ export interface AgentConfig {
   timeoutMs?: number // default 600_000
   llmConfig?: LlmConfig
   dryRun?: boolean // intercept write ops, record without executing
+  /** Conclusion-round behaviour. Omit for the default 300-word summary round. */
+  conclusion?: ConclusionConfig
 }
 
 export interface ToolCallLog {
@@ -282,6 +297,28 @@ export function manageContextWindow(
   return result
 }
 
+// ── Conclusion round ─────────────────────────────────────────────────
+
+const DEFAULT_DELIVERABLE_MIN_CHARS = 500
+
+/**
+ * Decide whether the conclusion round can be skipped: the deliverable is
+ * already in hand when the run completed naturally and the final assistant
+ * message is substantial enough to stand alone. Misjudging only costs one
+ * extra rescue round — it never loses the report.
+ */
+export function shouldSkipConclusion(
+  status: AgentResult["status"],
+  finalMessage: string,
+  conclusion?: ConclusionConfig,
+): boolean {
+  return (
+    conclusion?.skipIfDeliverable === true &&
+    status === "completed" &&
+    finalMessage.length >= (conclusion.deliverableMinChars ?? DEFAULT_DELIVERABLE_MIN_CHARS)
+  )
+}
+
 // ── Main agent loop ──────────────────────────────────────────────────
 
 export async function runAgent(
@@ -473,13 +510,23 @@ export async function runAgent(
     status = "max_iterations"
   }
 
+  // The final assistant message is computed before the conclusion round:
+  // agents whose deliverable IS the final message (reason) need it for the
+  // skip check, and the conclusion round never appends to `messages`.
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && m.content)
+  const finalMessage = lastAssistant?.content ?? ""
+
   // ── Conclusion round: answer the user's original query ──────────────
   let conclusion: string | undefined
-  if (status === "completed" || status === "max_iterations") {
+  if (
+    (status === "completed" || status === "max_iterations") &&
+    !shouldSkipConclusion(status, finalMessage, config.conclusion)
+  ) {
     try {
       const conclusionPrompt: ChatMessage = {
         role: "user",
         content:
+          config.conclusion?.prompt ??
           "You have finished all tool operations. Now write a brief conclusion for the user.\n" +
           "- Directly answer the user's original query based on what you found and did.\n" +
           "- For research/check/reason: state your findings and verdict clearly.\n" +
@@ -503,8 +550,6 @@ export async function runAgent(
   }
 
   const durationMs = Date.now() - startMs
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && m.content)
-  const finalMessage = lastAssistant?.content ?? ""
 
   // Build run report
   const runReport: RunReport = {

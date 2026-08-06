@@ -79,7 +79,7 @@ const CHECK_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "wiki.update_node",
-      description: "Update a node. Use status='invalidated' to mark factually wrong nodes. Set checked to today after verifying; set as_of when facts change.",
+      description: "Update a node. Use status='invalidated' to mark factually wrong nodes. Set checked to today after verifying; set as_of when facts change. WARNING: content is a WHOLE-PAGE replacement, not a patch — read the page first (wiki.get_node), then pass the complete updated body including all existing content.",
       parameters: {
         type: "object",
         properties: {

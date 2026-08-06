@@ -30,6 +30,21 @@ program
 
 program.addCommand(createGraphCommand())
 
+// ── Agent timeout guidance (--help only) ─────────────────────────────
+// The four task tiers (fast/medium/max/ultra) are advisory guidance for
+// callers — deliberately NOT a CLI option or code concept. Agents respond
+// differently to task scale, so help text steers callers to set --timeout
+// proactively instead of relying on the 10-min default.
+
+function timeoutGuidance(tiers: string): string {
+  return (
+    "\nTimeout guidance — agent runtime scales with task size, and each\n" +
+    "agent responds differently to the four task tiers below. Set --timeout\n" +
+    "proactively based on the expected workload (default: 10 min, fits 'max').\n\n" +
+    tiers
+  )
+}
+
 // ── use — set/clear SELECTED_WIKI ────────────────────────────────────
 
 program
@@ -208,6 +223,14 @@ program
   .option("--timeout <minutes>", "timeout in minutes (default 10)")
   .option("--verbose", "print tool call logs to stderr")
   .option("--dry-run", "preview operations without writing")
+  .addHelpText("after", timeoutGuidance(
+    "  fast      single small document              --timeout 2\n" +
+    "  medium    several documents / one topic      --timeout 5\n" +
+    "  max       a directory of documents           --timeout 10 (default)\n" +
+    "  ultra     large batch, deep extraction       --timeout 20+\n\n" +
+    "Note: for directory ingest the timeout applies PER FILE. Rough guidance,\n" +
+    "not hard rules — use --verbose to watch progress and adjust.",
+  ))
   .action(async (inputPath: string, opts: Record<string, unknown>) => {
     const target = resolveTarget(opts.wiki as string | undefined, true)
     const wikiRoot = target.paths[0]
@@ -293,6 +316,13 @@ program
   .option("--timeout <minutes>", "timeout in minutes (default 10)")
   .option("--verbose", "print tool call logs to stderr")
   .option("--dry-run", "preview operations without writing")
+  .addHelpText("after", timeoutGuidance(
+    "  fast      single-node fact lookup            --timeout 2\n" +
+    "  medium    enrich one topic                   --timeout 5\n" +
+    "  max       multi-node research sweep          --timeout 10 (default)\n" +
+    "  ultra     broad enrichment across the wiki   --timeout 20+\n\n" +
+    "Rough guidance, not hard rules — use --verbose to watch progress and adjust.",
+  ))
   .action(async (query: string, opts: Record<string, unknown>) => {
     const target = resolveTarget(opts.wiki as string | undefined, true)
     const wikiRoot = target.paths[0]
@@ -331,6 +361,15 @@ program
   .option("--timeout <minutes>", "timeout in minutes (default 10)")
   .option("--verbose", "print tool call logs to stderr")
   .option("--dry-run", "preview operations without writing")
+  .addHelpText("after", timeoutGuidance(
+    "  fast      targeted query, few candidates     --timeout 2\n" +
+    "  medium    one-topic staleness review         --timeout 5\n" +
+    "  max       content judgment across the wiki   --timeout 10 (default)\n" +
+    "  ultra     whole-wiki audit in --apply mode   --timeout 20+\n\n" +
+    "Applies to --query (LLM agent) mode only; --stale-before and --slugs are\n" +
+    "pure code and finish instantly. Rough guidance, not hard rules — use\n" +
+    "--verbose to watch progress and adjust.",
+  ))
   .action(async (opts: Record<string, unknown>) => {
     const target = resolveTarget(opts.wiki as string | undefined, true)
     const wikiRoot = target.paths[0]
@@ -417,6 +456,13 @@ program
   .option("--timeout <minutes>", "timeout in minutes (default 10)")
   .option("--verbose", "print tool call logs to stderr")
   .option("--dry-run", "preview operations without writing")
+  .addHelpText("after", timeoutGuidance(
+    "  fast      verify one node or claim           --timeout 2\n" +
+    "  medium    verify one topic                   --timeout 5\n" +
+    "  max       multi-node fact-check sweep        --timeout 10 (default)\n" +
+    "  ultra     whole-wiki accuracy audit          --timeout 20+\n\n" +
+    "Rough guidance, not hard rules — use --verbose to watch progress and adjust.",
+  ))
   .action(async (query: string, opts: Record<string, unknown>) => {
     const target = resolveTarget(opts.wiki as string | undefined, true)
     const wikiRoot = target.paths[0]
@@ -450,6 +496,18 @@ program
   .option("--timeout <minutes>", "timeout in minutes (default 10)")
   .option("--verbose", "print tool call logs to stderr")
   .option("--dry-run", "preview operations without writing")
+  .addHelpText("after", timeoutGuidance(
+    "  fast      shallow probe, 1-2 hops            --timeout 3\n" +
+    "  medium    one causal walk, report mode       --timeout 5\n" +
+    "  max       deep multi-hop reasoning           --timeout 10 (default)\n" +
+    "  ultra     multi-question analysis / --apply  --timeout 20+\n\n" +
+    "Reason walks the graph hop by hop and is the slowest agent — it is the\n" +
+    "one most worth sizing --timeout for. Iterations matter too: with warm\n" +
+    "caches each tool round is milliseconds, so broad or --apply walks hit\n" +
+    "--max-iterations before the clock — bump it for open-ended exploration.\n" +
+    "Rough guidance, not hard rules — use --verbose to watch progress and\n" +
+    "adjust.",
+  ))
   .action(async (query: string, opts: Record<string, unknown>) => {
     const target = resolveTarget(opts.wiki as string | undefined, true)
     const wikiRoot = target.paths[0]

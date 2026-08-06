@@ -119,7 +119,7 @@ const REASON_WRITE_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "wiki.update_node",
-      description: "Update a node with new insights or connections discovered during reasoning.",
+      description: "Update a node with new insights or connections discovered during reasoning. WARNING: content is a WHOLE-PAGE replacement, not a patch — read the page first (wiki.get_node), then pass the complete updated body including all existing content.",
       parameters: {
         type: "object",
         properties: {
@@ -203,12 +203,12 @@ Three-valued verdict (never force a binary — insufficient evidence gets its ow
 
 ## Page creation (APPLY mode only)
 - ALWAYS create wiki pages with wiki.add_node — never write_file (add_node enforces type→directory, frontmatter, index.md, and wikilink→related[] sync).
-- Choose the type deliberately: query (answer to a user query), comparison (false-causal analysis, contrasts), concept (induced general rule; abduction hypotheses use concept + status: hypothesis), synthesis (causal chain / closed-loop records).
-- Metadata discipline for every page you create: status (hypothesis/contested/established), as_of (only when extractable, never invent), related[] must link back to every node the page references.
+- Choose the type deliberately: query (answer to a user query), comparison (false-causal analysis, contrasts), concept (induced general rule; abduction hypotheses use type: concept with the hypothesis status marked in the body), synthesis (causal chain / closed-loop records).
+- Metadata discipline for every page you create: mark epistemic status (hypothesis/contested/established) in the page body — frontmatter status is reserved for page lifecycle (active/invalidated), never write epistemic status there. as_of only when extractable, never invent. related[] must link back to every node the page references.
 - Do NOT create placeholder pages for knowledge gaps (content comes from sources, that is ingest's job). Do NOT create separate change-record pages for as_of evolution — append a change record inside the node.
 
 ## Web search discipline
-web_search provides external leads, not wiki facts. Use it to corroborate mechanisms (test 2) and, only after the graph search fails, counterexamples (test 3). Dates found via search may inform reasoning but must never be written into as_of. Anything you write into the wiki from a search result must cite the source URL; when a search result conflicts with wiki content, decide by as_of recency, not by defaulting to the search.
+web_search provides external leads, not wiki facts. Use it to corroborate mechanisms (test 2) and, only after the graph search fails, counterexamples (test 3). Dates found via search may inform reasoning but must never be written into as_of. Anything you write into the wiki from a search result must cite the source URL; when a search result conflicts with wiki content, decide by as_of recency, not by defaulting to the search. If web_search is not in your tool list (API key not configured), skip external corroboration — decide from wiki evidence alone and note the limitation in the report.
 
 ## Operating rules
 - Read broadly first (get_stats, read_graph with filters), then dive deep (get_node, get_edges).
@@ -218,7 +218,7 @@ web_search provides external leads, not wiki facts. Use it to corroborate mechan
 
 ## Output Format
 ### Report Mode
-Output a structured reasoning report:
+Write the structured reasoning report as your FINAL message — the report is the deliverable the user reads, so it must be the last thing you output. Write it in the same language as the user's query:
 - **Causal Chain** (walk backbone): the hop-by-hop path — each hop: from → to, verdict (true/false/uncertain), evidence quote, confidence. If the path closed a loop, mark the closed loop and confirm every hop's direction still holds.
 - **False Causal Analyses**: verdicts of false causation with the failed test(s) and the comparison page created (APPLY mode)
 - **Hidden Connections**: pairs that should be linked, with reasoning + proposed relation type
@@ -228,7 +228,7 @@ Output a structured reasoning report:
 - **Temporal notes**: as_of-based evolution vs contradiction calls
 
 ### Apply Mode
-After the report, execute the changes, then summarize what was written.`
+Execute the changes after your analysis, then write the full structured report (the sections above, plus a Changes Written summary) as your FINAL message — the report is the deliverable the user reads, so it must be the last thing you output.`
 
 export interface ReasonOptions {
   wikiRoot: string
@@ -254,7 +254,11 @@ export async function runReason(options: ReasonOptions): Promise<AgentResult> {
       env: { SELECTED_WIKI: options.wikiRoot },
     })
 
-    const localTools: LocalToolRegistry = createLocalTools(options.wikiRoot, { webSearch: true })
+    const localTools: LocalToolRegistry = createLocalTools(options.wikiRoot, {
+      webSearch: true,
+      // Report mode is read-only: hide write_file/edit_file and refuse them.
+      readOnly: options.mode === "report",
+    })
 
     const tools = options.mode === "apply"
       ? [...REASON_READ_TOOLS, ...REASON_WRITE_TOOLS]
@@ -284,6 +288,15 @@ Analyze the subgraph related to this query. Discover hidden connections, knowled
         timeoutMs,
         llmConfig,
         dryRun: options.dryRun,
+        conclusion: {
+          // The deliverable is the structured report, already written as the
+          // final message — don't bury it under a 300-word summary round.
+          skipIfDeliverable: true,
+          // Fallback when the final message is too thin to be the report:
+          // rescue as much structure as possible, no word cap.
+          prompt:
+            "You have finished your reasoning work. Write the most complete structured reasoning report you can from everything you found — Causal Chain, False Causal Analyses, Hidden Connections, Knowledge Gaps, Patterns, Anomalies, Temporal notes. Include evidence quotes for every causal judgment. No word limit. No tool calls. Write in the same language as the user's query.",
+        },
       },
       userMessage,
       mcp,

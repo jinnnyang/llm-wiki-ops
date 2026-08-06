@@ -77,8 +77,11 @@ export function resolveLlmConfig(): LlmConfig {
 // ── Retry logic ──────────────────────────────────────────────────────
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
-const MAX_RETRIES = 3
-const BASE_DELAY_MS = 1000
+// Retryable errors are usually transient server overload — give them a
+// ~90s window to recover (2+4+8+16+30+30s) instead of the old ~7s.
+const MAX_RETRIES = 6
+const BASE_DELAY_MS = 2000
+const MAX_DELAY_MS = 30_000
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -112,7 +115,7 @@ export async function chat(
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1)
+      const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
       await sleep(delay)
     }
 
