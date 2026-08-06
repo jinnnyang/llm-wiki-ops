@@ -50,7 +50,11 @@ export class DryRunExecutor {
       timestamp: new Date().toISOString(),
     }
     this.entries.push(entry)
-    return `[DRY-RUN] Would execute: ${tool}(${JSON.stringify(args).slice(0, 200)})`
+    return (
+      `[DRY-RUN] Would execute: ${tool}(${JSON.stringify(args).slice(0, 200)})\n` +
+      "Nothing was written to disk — do not try to read it back, it does not exist. " +
+      "Treat this call as done and carry on with the remaining operations."
+    )
   }
 
   /** Format the operation list for display. */

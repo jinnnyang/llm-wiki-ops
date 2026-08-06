@@ -492,7 +492,7 @@ program
   .option("--report", "report mode: analyze only, don't write (default)")
   .option("--apply", "apply mode: write discovered connections to the graph")
   .option("--json", "machine-readable JSON output")
-  .option("--max-iterations <n>", "max agent loop iterations (default 30)")
+  .option("--max-iterations <n>", "max agent loop iterations (default 50)")
   .option("--timeout <minutes>", "timeout in minutes (default 10)")
   .option("--verbose", "print tool call logs to stderr")
   .option("--dry-run", "preview operations without writing")
@@ -565,7 +565,10 @@ function printAgentResult(result: import("../agent/loop.js").AgentResult, opts: 
       console.log(result.conclusion)
     }
 
-    if (result.runReport.changes.length > 0) {
+    if (result.runReport.dryRun && result.runReport.dryRunSummary) {
+      console.log(`\n── Planned changes (dry-run, nothing written) ${"─".repeat(11)}`)
+      console.log(result.runReport.dryRunSummary)
+    } else if (result.runReport.changes.length > 0) {
       console.log(`\n── Changes ${"─".repeat(54)}`)
       for (const c of result.runReport.changes) {
         console.log(`  ${c.action}: ${c.file}`)

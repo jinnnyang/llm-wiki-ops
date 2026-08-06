@@ -269,7 +269,10 @@ export async function runReason(options: ReasonOptions): Promise<AgentResult> {
       : "MODE: APPLY. After analysis, write discovered connections and insights to the wiki."
 
     const today = new Date().toISOString().slice(0, 10)
-    const maxIterations = options.maxIterations ?? 30
+    // 50 (not the loop default 30): with warm scan caches each tool round
+    // is milliseconds, so iterations — not wall clock — are the binding
+    // constraint, and open-ended walks spend most of them on exploration.
+    const maxIterations = options.maxIterations ?? 50
     const timeoutMs = options.timeoutMs ?? 600_000
     const timeoutMin = Math.round(timeoutMs / 60_000)
     const userMessage = `Reasoning scope: "${options.query}"

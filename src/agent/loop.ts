@@ -8,6 +8,8 @@ import { chat, type ChatMessage, type ChatResponse, type ToolCall, type ToolDefi
 import { McpClient, ServerDeadError } from "./mcp.js"
 import type { LocalToolRegistry } from "./tools.js"
 import { DryRunExecutor, isWriteTool, createPreWriteSnapshot, type SnapshotResult } from "./safety.js"
+import { TYPE_DIR_MAP } from "../types.js"
+import { titleToSlug } from "../utils/slug.js"
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -562,7 +564,9 @@ export async function runAgent(
       args: l.args,
       status: l.error ? "error" : "ok",
     })),
-    changes: deriveChanges(toolLogs),
+    // dry-run never touches disk — listing intercepted calls as "changes"
+    // misleads users; dryRunSummary carries what WOULD have happened.
+    changes: dryRun ? [] : deriveChanges(toolLogs),
     snapshotPath: snapshotResult?.path,
     dryRun: dryRun || undefined,
     dryRunSummary: dryRunExecutor?.summary(),
@@ -583,24 +587,38 @@ export async function runAgent(
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Derive file changes from tool call logs (best-effort). */
-function deriveChanges(toolLogs: ToolCallLog[]): RunReport["changes"] {
+export function deriveChanges(toolLogs: ToolCallLog[]): RunReport["changes"] {
   const changes: RunReport["changes"] = []
   for (const log of toolLogs) {
     if (log.error) continue
     const tool = log.tool.split(".").pop() ?? log.tool
     const path = (log.args["path"] as string) ?? undefined
     const slug = (log.args["slug"] as string) ?? undefined
-    const target = path ?? slug
-    if (!target) continue
 
-    if (tool === "write_file") {
-      changes.push({ file: target, action: "modified" })
+    if (tool === "write_file" || tool === "edit_file") {
+      if (path) changes.push({ file: path, action: "modified" })
     } else if (tool === "add_node") {
-      changes.push({ file: target, action: "created" })
+      // add_node takes title (not slug/path) — derive the page path the
+      // same way the write path does: slug from title + type directory.
+      const title = log.args["title"] as string | undefined
+      if (!title) continue
+      try {
+        const nodeSlug = titleToSlug(title)
+        const type = (log.args["type"] as string) ?? "synthesis"
+        const dir = TYPE_DIR_MAP[type as keyof typeof TYPE_DIR_MAP] ?? type
+        changes.push({ file: dir ? `${dir}/${nodeSlug}.md` : `${nodeSlug}.md`, action: "created" })
+      } catch {
+        // Title that cannot become a slug — skip rather than guess
+      }
+    } else if (tool === "rename_node") {
+      const newSlug = (log.args["new_slug"] as string) ?? undefined
+      const oldSlug = (log.args["old_slug"] as string) ?? undefined
+      const target = newSlug ?? oldSlug
+      if (target) changes.push({ file: target, action: "modified" })
+    } else if (tool === "update_node") {
+      if (slug) changes.push({ file: slug, action: "modified" })
     } else if (tool === "delete_node") {
-      changes.push({ file: target, action: "deleted" })
-    } else if (tool === "update_node" || tool === "rename_node" || tool === "edit_file") {
-      changes.push({ file: target, action: "modified" })
+      if (slug) changes.push({ file: slug, action: "deleted" })
     }
   }
   return changes
