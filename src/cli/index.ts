@@ -529,6 +529,66 @@ program
     }
   })
 
+// ── dream — offline consolidation agent ─────────────────────────────
+
+program
+  .command("dream [theme]")
+  .description("Offline consolidation: recombine distant nodes, record insights, let unused knowledge decay")
+  .option("--wiki <path>", "wiki root directory")
+  .option("--pressure", "only report how much the wiki needs a dream, then exit (no model call)")
+  .option("--dreams-dir <dir>", "where dream pages live (default wiki/dreams; must stay inside wiki/)")
+  .option("--certainty <0..1>", "how tightly to stick to the theme: 1 hugs the graph, 0 roams (default 0.5)")
+  .option("--max-iterations <n>", "dream depth: more iterations = a deeper, longer dream (default 50)")
+  .option("--timeout <minutes>", "timeout in minutes (default 10)")
+  .option("--json", "machine-readable JSON output")
+  .option("--verbose", "print tool call logs to stderr")
+  .option("--dry-run", "preview operations without writing")
+  .addHelpText("after",
+    "\nHow it works:\n" +
+    "  Pure code picks the material — pressure reading, salience ranking, and\n" +
+    "  seeded random walks that put distant nodes in one scene. The model then\n" +
+    "  judges each candidate connection REAL / NOT REAL / UNCERTAIN, writes\n" +
+    "  UNCERTAIN ones as dream pages under wiki/dreams/, and compresses nodes\n" +
+    "  nobody reads one level at a time.\n\n" +
+    "  Same day = same seed = same scenes (recorded in the journal), so a dream\n" +
+    "  can be reproduced.\n\n" +
+    "Examples:\n" +
+    "  llm-wiki dream --pressure           check whether a dream is warranted\n" +
+    "  llm-wiki dream                      free dream, defaults\n" +
+    "  llm-wiki dream \"memory\" --certainty 0.8   stay close to one theme\n" +
+    "  llm-wiki dream --certainty 0.2      roam widely, more teleports\n" +
+    "  llm-wiki dream --dry-run            see what it would do, write nothing\n",
+  )
+  .action(async (theme: string | undefined, opts: Record<string, unknown>) => {
+    const target = resolveTarget(opts.wiki as string | undefined, true)
+    const wikiRoot = target.paths[0]
+    const { runDream } = await import("../agent/dream.js")
+    try {
+      const result = await runDream({
+        wikiRoot,
+        theme,
+        pressureOnly: !!opts.pressure,
+        dreamsDir: opts.dreamsDir as string | undefined,
+        certainty: opts.certainty ? parseFloat(opts.certainty as string) : undefined,
+        maxIterations: opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined,
+        timeoutMs: opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined,
+        verbose: !!opts.verbose,
+        dryRun: !!opts.dryRun,
+      })
+
+      // --pressure is a pure reading: print it plainly, skip the agent framing.
+      if (opts.pressure) {
+        if (opts.json) console.log(JSON.stringify(result.pressure, null, 2))
+        else console.log(result.finalMessage)
+        return
+      }
+      printAgentResult(result, opts)
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`)
+      process.exit(1)
+    }
+  })
+
 // ── Shared output helper ────────────────────────────────────────────
 
 function printAgentResult(result: import("../agent/loop.js").AgentResult, opts: Record<string, unknown>) {

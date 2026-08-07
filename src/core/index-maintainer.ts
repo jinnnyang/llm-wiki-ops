@@ -31,6 +31,7 @@ function typeHeading(type: PageType): string {
     : type === "query" ? "Queries"
     : type === "comparison" ? "Comparisons"
     : type === "synthesis" ? "Synthesis"
+    : type === "dream" ? "Dreams"
     : type === "overview" ? "Overview"
     : null
 

@@ -322,6 +322,13 @@ export async function updateNode(
     result.fieldsChanged.push("status")
   }
 
+  // Compression stage: dream's private bookkeeping, kept out of status so the
+  // existing status consumers stay untouched (design: dream.md §6.1).
+  if (patch.compression !== undefined && patch.compression !== fm.compression) {
+    fm.compression = patch.compression
+    result.fieldsChanged.push("compression")
+  }
+
   if (patch.superseded_by !== undefined && patch.superseded_by !== fm.superseded_by) {
     fm.superseded_by = patch.superseded_by
     result.fieldsChanged.push("superseded_by")

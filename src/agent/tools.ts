@@ -34,6 +34,27 @@ function resolveSandboxed(wikiRoot: string, userPath: string): string {
   return resolved
 }
 
+/**
+ * Enforce a write scope on top of the root sandbox (design: dream.md §9).
+ *
+ * Reads stay unrestricted — an agent must be able to read the whole wiki to
+ * reason about it. Writes are confined to one subtree, which is how the dream
+ * agent gets full control of wiki/dreams/ without any means of hand-editing
+ * knowledge nodes.
+ */
+function assertWritableScope(wikiRoot: string, userPath: string, writeScope?: string): void {
+  if (!writeScope) return
+  const target = resolve(wikiRoot, userPath)
+  const scopeRoot = resolve(wikiRoot, writeScope)
+  const rel = relative(scopeRoot, target)
+  if (rel.startsWith("..") || resolve(scopeRoot, rel) !== target) {
+    throw new Error(
+      `Write refused: "${userPath}" is outside the write scope "${writeScope}/". ` +
+        `Reads are unrestricted, but this agent may only write inside that directory.`,
+    )
+  }
+}
+
 // ── Truncation ───────────────────────────────────────────────────────
 
 const MAX_READ_BYTES = 50 * 1024 // 50KB
@@ -318,7 +339,19 @@ async function toolWebSearch(args: Record<string, unknown>): Promise<LocalToolRe
 
 // ── Registry factory ─────────────────────────────────────────────────
 
-export function createLocalTools(wikiRoot: string, opts?: { webSearch?: boolean; readOnly?: boolean }): LocalToolRegistry {
+export function createLocalTools(
+  wikiRoot: string,
+  opts?: {
+    webSearch?: boolean
+    readOnly?: boolean
+    /**
+     * Confine writes to this subtree (relative to wikiRoot). Reads are
+     * unaffected. dream.md §9 — the dream agent owns wiki/dreams/ and nothing
+     * else.
+     */
+    writeScope?: string
+  },
+): LocalToolRegistry {
   const definitions: ToolDefinition[] = [
     {
       type: "function",
@@ -431,10 +464,20 @@ export function createLocalTools(wikiRoot: string, opts?: { webSearch?: boolean;
           return toolListDirectory(wikiRoot, args)
         case "write_file": {
           const path = (args["path"] as string) ?? ""
+          try {
+            assertWritableScope(wikiRoot, path, opts?.writeScope)
+          } catch (e) {
+            return { content: (e as Error).message, isError: true }
+          }
           return serializedWrite(path, () => toolWriteFile(wikiRoot, args))
         }
         case "edit_file": {
           const path = (args["path"] as string) ?? ""
+          try {
+            assertWritableScope(wikiRoot, path, opts?.writeScope)
+          } catch (e) {
+            return { content: (e as Error).message, isError: true }
+          }
           return serializedWrite(path, () => toolEditFile(wikiRoot, args))
         }
         case "web_search":

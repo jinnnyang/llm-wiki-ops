@@ -94,6 +94,8 @@ export interface FreshnessScanResult {
   skipped: {
     invalidated: number
     noReferenceClock: number
+    /** Dream pages, excluded by type (dream.md §7.1). */
+    dreams: number
   }
   /** Due now, sorted by overdueDays descending (most overdue first). */
   due: FreshnessEntry[]
@@ -170,10 +172,20 @@ export function scanFreshnessFromPages(
   const upcoming: FreshnessEntry[] = []
   let invalidated = 0
   let noReferenceClock = 0
+  let dreams = 0
 
   for (const page of pages) {
     if (page.status === "invalidated") {
       invalidated++
+      continue
+    }
+
+    // Dream pages are excluded by type (design: dream.md §7.1). They carry no
+    // as_of on purpose, and without this skip a missing as_of means T=0 →
+    // weekly checks — the most aggressive schedule there is — which would send
+    // the check agent off to "verify" a dream and possibly rewrite it.
+    if (page.type === "dream") {
+      dreams++
       continue
     }
 
@@ -218,7 +230,7 @@ export function scanFreshnessFromPages(
   return {
     today,
     totalScanned: pages.length,
-    skipped: { invalidated, noReferenceClock },
+    skipped: { invalidated, noReferenceClock, dreams },
     due,
     upcoming,
   }

@@ -17,6 +17,8 @@ export type KnownPageType =
   | "query"
   | "comparison"
   | "synthesis"
+  /** Offline recombination product of the dream agent (design: dream.md §7.1). */
+  | "dream"
   | "overview"
 
 /** Actual type: known types + arbitrary extension strings */
@@ -167,6 +169,12 @@ export interface UpdateNodePatch {
   /** Verification clock: set by check agent after fact verification. */
   checked?: string
   dryRun?: boolean
+  /**
+   * Compression stage, dream's private bookkeeping (design: dream.md §6.1).
+   * active | condensed | skeleton. Deliberately NOT status: that field has
+   * live consumers (freshness exclusion, purge, check prompt semantics).
+   */
+  compression?: string
 }
 
 export interface UpdateNodeResult extends MutationResult {
@@ -318,6 +326,7 @@ export const TYPE_DIR_MAP: Record<KnownPageType, string> = {
   query: "queries",
   comparison: "comparisons",
   synthesis: "synthesis",
+  dream: "dreams",
   overview: "", // wiki/ root
 }
 
@@ -339,5 +348,6 @@ export const KNOWN_TYPE_ORDER: KnownPageType[] = [
   "query",
   "comparison",
   "synthesis",
+  "dream",
   "overview",
 ]

@@ -167,6 +167,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           tags: { type: "array", items: { type: "string" } },
           related: { type: "array", items: { type: "string" } },
           sources: { type: "array", items: { type: "string" }, description: "Source URLs or paths (replaces)" },
+          compression: {
+            type: "string",
+            description: "Compression stage: active | condensed | skeleton. Dream's private bookkeeping (design doc dream.md §6.1) — deliberately separate from status.",
+          },
           status: { type: "string", description: "Node status: 'active' (default) or 'invalidated'" },
           superseded_by: { type: "string", description: "Slug of replacement node (when status=invalidated)" },
           as_of: { type: "string", description: "Fact clock YYYY-MM-DD (see add_node.as_of)" },
@@ -364,6 +368,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           related: args?.related as string[] | undefined,
           sources: args?.sources as string[] | undefined,
           status: args?.status as string | undefined,
+          compression: args?.compression as string | undefined,
           superseded_by: args?.superseded_by as string | undefined,
           as_of: args?.as_of as string | undefined,
           checked: args?.checked as string | undefined,

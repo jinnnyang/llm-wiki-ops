@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from "vitest"
 import type { Graph, GraphNode, GraphEdge } from "../src/types.js"
+import { KNOWN_TYPE_ORDER } from "../src/types.js"
 import { computeTopology } from "../src/metrics/topology.js"
 import { computeSourceOverlap } from "../src/metrics/source-overlap.js"
 import { computeTypeEdges } from "../src/metrics/type-edges.js"
@@ -194,7 +195,9 @@ describe("computeTypeBalance", () => {
     const tb = computeTypeBalance({ nodes: [], edges: [] })
     expect(tb.total).toBe(0)
     expect(tb.dominant).toBeNull()
-    expect(tb.emptyKnownTypes.length).toBe(7) // all known types empty
+    // Tracks KNOWN_TYPE_ORDER rather than a hardcoded count, so registering a
+    // new page type (e.g. dream) doesn't spuriously fail this test.
+    expect(tb.emptyKnownTypes.length).toBe(KNOWN_TYPE_ORDER.length) // all known types empty
   })
 
   it("distribution and dominant", () => {
