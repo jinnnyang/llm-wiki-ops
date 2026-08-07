@@ -49,7 +49,7 @@
 
 ## 4. usage log（底层访问/操作日志）
 
-**定位**：底层能力，不是 dream 的附属。增删改查全部经过它，任何路径无法绕过。
+**定位**：底层能力，不是 dream 的附属。除本地文件工具（§9，dream 写梦境页、check 写 verified 标记）外，所有图谱读写必经 usage log——任何路径无法绕过。
 
 ### 4.1 埋点位置：WikiGraph facade（唯一咽喉）
 
@@ -115,6 +115,8 @@ function computeUsageStats(wikiRoot: string, opts?: UsageStatsOptions): Promise<
 
 - `maintainLog` 默认翻转影响全部构造 `WikiGraph` 的测试（约 251 例）——test helper 统一传 `maintainLog: false`，生产默认开。
 - 常驻图、A′ 扫描缓存零改动（usage 文件不在 `wiki/` 内）。
+- **多进程读一致性（补评审缺口）**：`wiki-cache.ts:49` 用 `resident:true, trustWindowMs:0`（永不重验证），单进程下成立，但 dream 是多进程并发场景——另一进程 update_node 后，dream 的 resident 图不更新、基于过期图做决策。修法：dream 的 MCP 实例设 `trustWindowMs>0`（如 30s），或每次 dream 运行前 `clearScanCache()` 重建 resident。check/reason 同理（多 agent 同操作一个 wiki）。
+- **`wikiRoot` 大小写归一化（补评审缺口）**：`path.resolve(wikiRoot)` 不归一化大小写，Windows 上 `C:\Wiki` 与 `c:\wiki` 字符串不同 → 不同缓存 key → 同一物理目录双 A′ 缓存、`maybeRebuildAfterWrite` 失效。`WikiGraph` 构造时对 `wikiRoot` 做一次 `path.resolve + toLowerCase`（或 `realpath`）归一化。dream 的 `--dreams-dir` 与 `wikiRoot` 拼接尤其要统一。
 
 ## 5. dream 的选择机制（纯代码 + 注入 prompt）
 
@@ -144,13 +146,13 @@ Journal 行 schema：
 
 ### 5.2 Pressure（该不该做梦）—— `llm-wiki dream --pressure`
 
-纯代码、无状态重算（freshness.ts 风格）：一次 `scanWiki` + `scanFreshnessFromPages`，对照 journal 最后一行的日期计数：
+纯代码、无状态重算（freshness.ts 风格）：一次 `scanWiki` + `scanFreshnessFromPages`，对照 journal 最后一行的日期计数。**对比基准（补评审缺口）**：一律相对**上次 dream 日期**（journal 最后一行 `date`）统计——新增 = `created > lastDreamDate`，更新 = `updated > lastDreamDate` 且非新增；不滚动 7/30 天窗口（journal 只存一次日期，滚动窗口需额外状态，如无必要勿增实体）。"距上次 dream 天数"即 `today - lastDreamDate`。
 
 | 分项 | 初始权重（可调，展示在报告里） |
 |------|------|
 | 新增页面数 | ×1 |
 | 更新页面数 | ×0.5 |
-| hypothesis 页数 | ×2 |
+| hypothesis 页数 | ×2（**依赖 reason 产出，现无生产者**，见下） |
 | `contradicts` 边数 | ×3 |
 | freshness 逾期数 | ×1 |
 | 距上次 dream 天数 | ×1 |
@@ -167,6 +169,8 @@ Journal 行 schema：
 - **智能体琢磨痕迹**：近期 updated/checked 戳、hypothesis/needs-verification 标记。
 
 初始采样权重（仅用于排序与加权随机，不是门槛）：`usage30 0.35 / inDegree 0.25 / overdue 0.2 / touch 0.2`，外加 **ε 地板**——零 salience 节点保留最低被选中概率：梦必须偶尔回访被遗忘者。
+
+**touch 防自污染（补评审缺口）**：touch 分量原定义含"近期 updated/checked 戳"，但 `node-ops.ts:345` 每次写都 `fm.updated = today()`——dream 压缩节点会 bump updated → touch 增大 → 越压缩越"新鲜"越值得梦，形成正反馈。修法：touch 改用 **checked 戳**（核验钟，仅 check agent 写，`node-ops.ts:447` 附近）而非 updated；不含 checked 的节点 touch=0。dream 自己的压缩不写 checked，自污染消除。
 
 **原始分项数字全部注入 dream prompt**，agent 可自行推翻任何排名。
 
@@ -186,11 +190,11 @@ Journal 行 schema：
 
 | 线索 | 发现方式 |
 |------|---------|
-| hypothesis 页 | **纯代码 body 扫描**（`ScannedPage.content` 已含全文）——因为 `read_graph query` 只搜 title/slug（`mcp/index.ts` 已验证），body 标记任何 MCP 查询都够不着，无需 tag 改造。标记约定需与 reason 实际写入格式对齐（实施时 grep 真实产物确认） |
+| hypothesis 页 | **纯代码 body 扫描**（`ScannedPage.content` 已含全文）——因为 `read_graph query` 只搜 title/slug（`mcp/index.ts` 已验证），body 标记任何 MCP 查询都够不着，无需 tag 改造。**⚠️ 评审核查：`src/agent/` 现无任何 agent 写 hypothesis 标记的代码锚点**——该分项目前无生产者、恒为 0。处置：P1 实施时先 grep reason 真实产物确认写入格式；若 reason 不产出可扫描的 hypothesis 标记，该分项暂时剔除（权重置 0），待 reason 落地协议后再启用，不在 dream 侧硬造一个不存在的信号 |
 | `contradicts` 边 | 扫 `related[]` 的 `{slug, relation}`（`types.ts` RelatedEntry） |
 | freshness 逾期 | `scan_freshness` MCP 工具 |
 | check UNCERTAIN | 现成 `needs-verification` tag（`check.ts:158`）→ `read_graph tag=` |
-| 上次未闭合 thread | journal 最后一行 `threads_carried` → **优先重访**（dream-lag 的系统对应物） |
+| 上次未闭合 thread | journal 最后一行 `threads_carried` → **优先重访**（dream-lag 的系统对应物）。**闭合判据（补评审缺口）**：一条 thread（hypothesis 页 / contradicts 边 / needs-verification 页 / UNCERTAIN 灵感）在本轮 dream 得到**裁决**即闭合并从 `threads_carried` 移除——裁决 = check 证实晋升 / dream 明确 link/no-link / 证伪删除。未裁决的 thread 原样带入下一轮 journal；任一判据歧义时按"保守携带"处理（宁多梦一次，不丢线索） |
 
 ## 6. 渐进压缩（模拟遗忘）
 
@@ -200,7 +204,7 @@ Journal 行 schema：
 
 压缩阶梯在所有被触及的节点（知识节点 + 梦境页）上用专属字段 `compression:`，不复用 `status`。`status` 有三个活跃消费者（freshness 排除 `invalidated`、purge 标记死节点、check prompt 语义约束），语义是"知识生命周期"——往里塞压缩等级会污染旧规则。`compression:` 是 dream 的内部簿记，旧逻辑碰不到它，dream agent 拥有干净的解释权。
 
-字段写入：知识节点由 dream 经 `update_node` 改级——`UpdateNodePatch` 需新增 `compression?: string` 字段（小改动，`types.ts:156`；不扩展 schema，update_node 摸不到该字段，见 §9）；梦境页由本地读写工具直接改（§9）。该字段对 MCP `get_node` 不可见（`WikiPage` 固定接口不含未知字段）——设计意图：压缩状态的受众是 dream agent 自己（`read_file` 读取），不是图谱查询。
+字段写入：知识节点由 dream 经 `update_node` 改级——**扩展 `UpdateNodePatch` 增加 `compression?: string` 字段**（`types.ts:156`，小改动；这是拍板"不新增 `compress_node` 工具"的正解，见 §6.5——不是"不扩展 schema"）。同步扩展 MCP `update_node` schema（`mcp/index.ts:157`，`additionalProperties:false` 需加 `compression` properties 项）。梦境页由本地读写工具直接改（§9）。该字段对 MCP `get_node` 不可见（`WikiPage` 固定接口不含未知字段）——设计意图：压缩状态的受众是 dream agent 自己（`read_file` 读取），不是图谱查询。
 
 | 阶段 | compression | 内容规则 |
 |------|-------------|---------|
@@ -226,7 +230,7 @@ agent loop 已在首次写操作前自动 git snapshot（`safety.ts`/`loop.ts` �
 ### 6.5 豁免集与工具
 
 - **永不压缩**：`sources/`（溯源，引用目标）与 `overview`（根地图）。entities/concepts 自由压缩。
-- **不新增 `compress_node` MCP 工具**：`update_node` 的整页替换就是压缩原语（get_node → 模型浓缩 → 整页写回），内容丢失风险由 pre-write snapshot 兜底——research 早已带着同样的风险工作。新工具是把 prompt 协议已能治理的东西再编码一遍，多余实体。
+- **不新增 `compress_node` MCP 工具**：`update_node` 的整页替换就是压缩原语（get_node → 模型浓缩 → 整页写回），但要给 `UpdateNodePatch` 与 MCP `update_node` schema 各加一个 `compression?: string` 字段（§6.1），否则没有写路径能碰 compression。内容丢失风险由 pre-write snapshot 兜底——research 早已带着同样的风险工作。新工具是把 prompt 协议已能治理的东西再编码一遍，多余实体。
 
 ## 7. dream 产物（幻觉 / 灵感）
 
@@ -271,6 +275,7 @@ dream 节点被 freshness 排除 → 不再自动进 check 队列（第 1 轮"�
 - **证实** → 晋升为正式节点：新建 concept/entity（as_of/来源齐全），建与梦境页的边（溯源）；梦境页保留为出处，或由下一轮 dream 压缩/删除；
 - **证伪** → 留给 dream 下一轮清理（dream 对 dreams/ 绝对控制）；清醒 agent 不改写梦境正文。
 - check 现有的 `needs-verification` tag 机制（check.ts:158）可复用：被路由核验但判 UNCERTAIN 的灵感打 tag 留待后续。
+- **闭环标记（补评审缺口）**：证实晋升时，check/晋升动作**在原梦境页 frontmatter 写 `verified: true`**（本地文件工具），并建与正式节点的边（溯源）。下一轮 dream 的 prompt：跳过 `verified: true` 的梦境页（已证实，勿删勿压缩）；证伪则写 `verified: false` 供 dream 清理。否则 dream 会把刚证实、有价值的页下一轮删掉——核验回路缺闭环。
 
 ### 7.3 两种"梦的记录"的分工（回答状态文件之问）
 
@@ -347,9 +352,9 @@ CLI flag 只直通用户面参数；内部旋钮不给 flag——要改就构造
 
 **读工具**（13 个 MCP 工具中全部 6 个只读工具）：`get_stats, read_graph, get_node, get_edges, metrics, scan_freshness` + 新增 `usage_stats`。
 
-**写工具（MCP，仅真实执行模式）**：`add_edge`, `remove_edge`, `update_node`（压缩原语，§6.5；`UpdateNodePatch` 新增 `compression?: string`——不扩展 schema，update_node 摸不到该字段），`delete_node`（压缩终末阶段 §6.4 与梦境页清理共用——deleteNode 事务内清理悬空 wikilink/related/index，正是删梦境页需要的语义），`rebuild_index`（收尾跑一次，补本地写不维护 index 的缺口，§7.1）。**不含 `add_node`、`rename_node`**（拍板）：前者 schema 装不下 theme/description/compression，梦境节点创建走本地文件工具；后者不是 dream 的动作域（知识节点不重命名、梦境页只增删不改名）。知识节点创建是 ingest/research 的领地，dream 不碰。
+**写工具（MCP，仅真实执行模式）**：`add_edge`, `remove_edge`, `update_node`（压缩原语，§6.5；`UpdateNodePatch` 与 `update_node` schema 各加 `compression?: string`——见 §6.1，这是 compression 的唯一 MCP 写路径），`delete_node`（压缩终末阶段 §6.4 与梦境页清理共用——deleteNode 事务内清理悬空 wikilink/related/index，正是删梦境页需要的语义），`rebuild_index`（收尾跑一次，补本地写不维护 index 的缺口，§7.1）。**不含 `add_node`、`rename_node`**（拍板）：前者 schema 装不下 theme/description/compression，梦境节点创建走本地文件工具；后者不是 dream 的动作域（知识节点不重命名、梦境页只增删不改名）。知识节点创建是 ingest/research 的领地，dream 不碰。
 
-**本地文件工具（梦境页创建/修改，写 scope 限 dreams/ 内）**：`read_file`, `write_file`, `edit_file`, `list_directory`（现有四件，`tools.ts:321`；当前只有 `readOnly` 旗标、**无 delete 工具**——删除一律走 MCP `delete_node`）。`createLocalTools` 需新增选项 `writeScope?: string`（相对目录；界外 write_file/edit_file 拒绝，读不受限；实现 = 现有 `resolveSandboxed` 根沙箱上加一层包含检查，`tools.ts:28`）——这是 §7.1"写 scope 限 dreams/ 内"的实现。"绝对控制" = 界内任意 CRUD + delete_node，不是跨 wiki 的无界写权限。
+**本地文件工具（梦境页创建/修改，写 scope 限 dreams/ 内）**：`read_file`, `write_file`, `edit_file`, `list_directory`（现有四件，`tools.ts:321`；当前只有 `readOnly` 旗标、**无 delete 工具**——删除一律走 MCP `delete_node`）。`createLocalTools` 需新增选项 `writeScope?: string`（相对目录；界外 write_file/edit_file 拒绝，读不受限；实现 = 现有 `resolveSandboxed` 根沙箱上加一层包含检查，`tools.ts:28`）——这是 §7.1"写 scope 限 dreams/ 内"的实现。"绝对控制" = 界内任意 CRUD + delete_node，不是跨 wiki 的无界写权限。**`list_directory` 过滤 INFRA_FILES（补评审缺口）**：与图谱一致，产出剔除 `index.md`/`log.md`（`INFRA_FILES` 按 basename，`types.ts:285`），避免把删除残留或基建文件算进"梦境页全集"。
 
 本地写的两个事实（接受的风险，写明理由）：(a) 不走事务层（无 wiki 锁）——dreams/ 唯一写者是 dream agent，单进程内已有 serializedWrite 按路径串行，进程间对手只有清醒 agent，而 prompt 纪律禁止它们碰 dreams/（§7.2）；(b) `writeFileSync` 非原子（`tools.ts:115`，不同于事务的 writeFileAtomic）——写一半崩溃得坏页，pre-write git snapshot 可恢复（本地 write_file/edit_file 已在 WRITE_TOOLS 集合，`safety.ts:16-28`，dry-run 拦截与快照对本地写同样生效）。对昙花一现的低价值梦境内容，两者均可接受。
 
@@ -380,13 +385,15 @@ user message 注入：日期、压力快照、salience 表（原始分项）、�
 |------|------|------|
 | `src/index.ts` | facade 埋点 + `WikiGraphOptions.actor`；`maintainLog` 默认翻转 | P0 |
 | `src/core/usage.ts` | 新建：JSONL 解析 + computeUsageStats（memoize） | P0 |
-| `src/mcp/index.ts` | `usage_stats` 工具（第 14 个） | P0 |
+| `src/mcp/index.ts` | `usage_stats` 工具（第 14 个）；`update_node` schema 加 `compression` | P0/P2 |
+| `src/core/graph-builder.ts` | `WikiGraph` 构造时 `wikiRoot` 大小写归一化（`path.resolve+toLowerCase`/`realpath`） | P0 |
+| `src/mcp/wiki-cache.ts` | dream 实例 `trustWindowMs>0`（或 run 前 `clearScanCache`）；actor 传递 | P0 |
 | `src/cli/` | `graph usage` 子命令；dream 命令 + `WIKI_AGENT` env（spawn 点） | P0/P1 |
 | `src/types.ts` | `KnownPageType` 加 dream；`TYPE_DIR_MAP` 加 `dream: "dreams"`；`KNOWN_TYPE_ORDER` 加 dream；`UpdateNodePatch.compression?: string` | P2 |
 | `src/core/index-maintainer.ts` | `typeHeading()` 加 `## Dreams` | P2 |
 | `src/core/freshness.ts` | `scanFreshnessFromPages` 跳过 `type === "dream"`（一行） | P2 |
 | `src/core/node-ops.ts` | `updateNode` 处理 `patch.compression`（仿 status 分支，`node-ops.ts:320`） | P2 |
-| `src/agent/tools.ts` | `createLocalTools` 加 `writeScope` 选项（`resolveSandboxed` 之上加包含检查） | P2 |
+| `src/agent/tools.ts` | `createLocalTools` 加 `writeScope` 选项（`resolveSandboxed` 之上加包含检查）；`list_directory` 过滤 INFRA_FILES | P2 |
 | `src/agent/dream.ts` | 新建：DreamOptions、journal、pressure、salience、游走、prompt、runDream | P1/P2 |
 | `src/mcp/server.ts` + `wiki-cache.ts` | actor 传递（`WIKI_AGENT` env） | P0 |
 | reason/research/check prompt | UNVERIFIED DREAM 引用纪律 + dreams/ 不写纪律 | P3 |
@@ -413,3 +420,18 @@ user message 注入：日期、压力快照、salience 表（原始分项）、�
 - 每次压缩至多降一级（prompt 协议，无代码门禁），梦境页豁免；
 - pressureThreshold 默认 10、salience/pressure 权重初始值如 §5.2/5.3——全是 DreamOptions 字段，库级可调；
 - 顺手在 reason/research/check prompt 加一句 dream 页引用纪律。
+
+**评审核实（2026-08-07，逐条核对源码后吸收）：**
+
+- **compression 写路径** → 扩展 `UpdateNodePatch` + MCP `update_node` schema 加 `compression?: string`（§6.1/§6.5）。拍板是"不新增 `compress_node` 工具"，不是"不扩展 schema"——原稿矛盾表述（"不扩展 schema，update_node 摸不到该字段"）已修正；这是唯一让压缩协议可落地的选择。
+- **`.gitignore` 加 `.llm-wiki-ops/`**（已提交）——git 快照只覆盖 `wiki/`，不把 usage/journal/锁提交进仓库。
+- **多进程读一致性** → dream 实例 `trustWindowMs>0` 或 run 前 `clearScanCache`（§4.6）——`wiki-cache.ts:49` 的 trust0 单进程假设不成立。
+- **`wikiRoot` 大小写归一化** → `WikiGraph` 构造时 `resolve+toLowerCase`（§4.6）——防 Windows 双 A′ 缓存。
+- **pressure 对比基准** → 相对上次 dream 日期统计新增/更新（§5.2）。
+- **hypothesis 分项** → 现无生产者，P1 核实 reason 产物，无则置 0（§5.2/§5.5）。
+- **threads_carried 闭合判据** → 本轮得到裁决（证实 / link-no-link / 证伪）即闭合（§5.5）。
+- **touch 防自污染** → 改用 checked 戳而非 updated（§5.3）——`node-ops.ts:345` 每次写 bump updated 会形成正反馈。
+- **核验闭环** → 证实 / 证伪时在原梦境页写 `verified` 标记（§7.2）。
+- **usage 总前提措辞**收窄为"除本地文件工具外"（§4）。
+- **`list_directory` 过滤 INFRA_FILES**（§9）。
+- **行号修正**：`KnownPageType` 在 `types.ts:13`（非 267）；`overdueDays` 计算在 `freshness.ts:192`；`typeHeading()` 对未知类型返回首字母大写（`## Dream`），批量索引的未知段写死 `## Other`——`index-maintainer.ts:26-38, 85-92`。
