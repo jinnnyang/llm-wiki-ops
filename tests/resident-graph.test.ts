@@ -49,7 +49,7 @@ afterEach(async () => {
 
 describe("resident graph", () => {
   it("lazy init: constructor reads nothing, cold build reads all files, warm reads read zero", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 0 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 0 })
     expect(readCount()).toBe(0) // constructor does NOT touch the filesystem
 
     const page = await wiki.getNode("nvidia")
@@ -67,7 +67,7 @@ describe("resident graph", () => {
   })
 
   it("read-your-writes: addNode visible immediately (no revalidation needed)", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 0 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 0 })
     const before = await wiki.getStats() // cold build
 
     await wiki.addNode({
@@ -84,7 +84,7 @@ describe("resident graph", () => {
   })
 
   it("cascade write: renameNode refreshes slug index and edges", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 0 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 0 })
     const before = await wiki.getStats()
 
     await wiki.renameNode("nvidia", "nvda")
@@ -99,7 +99,7 @@ describe("resident graph", () => {
   })
 
   it("trustWindowMs=0: external edits invisible until releaseResident", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 0 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 0 })
     expect(await wiki.getNode("kv-cache")).toBeTruthy()
 
     const file = path.join(fixture.wikiDir, "concepts", "kv-cache.md")
@@ -113,7 +113,7 @@ describe("resident graph", () => {
   })
 
   it("trust window expiry: revalidation picks up external edits", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 50 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 50 })
     await wiki.getNode("kv-cache") // cold build
 
     const file = path.join(fixture.wikiDir, "concepts", "kv-cache.md")
@@ -127,7 +127,7 @@ describe("resident graph", () => {
   })
 
   it("dry-run write never rebuilds or corrupts state", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 0 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 0 })
     const before = await wiki.getStats()
 
     await wiki.addNode({ title: "Ghost Node", dryRun: true })
@@ -137,7 +137,7 @@ describe("resident graph", () => {
   })
 
   it("releaseResident: next read cold-rebuilds from disk", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 0 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 0 })
     await wiki.getNode("nvidia")
     resetReadCount()
     await wiki.getNode("nvidia")
@@ -149,7 +149,7 @@ describe("resident graph", () => {
   })
 
   it("cleanup releases resident state (next read cold-rebuilds)", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 0 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 0 })
     await wiki.getNode("nvidia")
     resetReadCount()
 
@@ -159,14 +159,14 @@ describe("resident graph", () => {
   })
 
   it("write before any read: next read cold-builds including the write", async () => {
-    const wiki = new WikiGraph(fixture.root, { resident: true, trustWindowMs: 0 })
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false, resident: true, trustWindowMs: 0 })
     await wiki.addNode({ title: "First Write", type: "concept", content: "body" })
 
     expect((await wiki.getNode("first-write"))?.title).toBe("First Write")
   })
 
   it("non-resident contrast: external edit visible on next read (A′ revalidates)", async () => {
-    const wiki = new WikiGraph(fixture.root) // resident defaults to false
+    const wiki = new WikiGraph(fixture.root, { maintainLog: false }) // resident defaults to false
     expect(wiki.resident).toBe(false)
     await wiki.getNode("kv-cache")
 

@@ -39,7 +39,7 @@ export interface PurgeByDateResult {
  * Uses scanWiki directly (not readGraph) to avoid the 500-node limit.
  */
 export async function purgeByDate(options: PurgeByDateOptions): Promise<PurgeByDateResult> {
-  const wiki = new WikiGraph(options.wikiRoot)
+  const wiki = new WikiGraph(options.wikiRoot, { actor: "purge" })
   const wikiDir = join(options.wikiRoot, "wiki")
   const pages = await scanWiki(wikiDir, options.wikiRoot)
 
@@ -78,7 +78,7 @@ export interface PurgeBySlugsResult {
 
 /** Pure code: directly mark/delete specified slugs. */
 export async function purgeBySlugs(options: PurgeBySlugsOptions): Promise<PurgeBySlugsResult> {
-  const wiki = new WikiGraph(options.wikiRoot)
+  const wiki = new WikiGraph(options.wikiRoot, { actor: "purge" })
   const affected: PurgeBySlugsResult["affected"] = []
   const notFound: string[] = []
 
@@ -226,7 +226,7 @@ export async function runPurgeAgent(options: PurgeQueryOptions): Promise<AgentRe
       transport: "stdio",
       command: "node",
       args: [join(import.meta.dirname, "..", "mcp", "index.js")],
-      env: { SELECTED_WIKI: options.wikiRoot },
+      env: { SELECTED_WIKI: options.wikiRoot, WIKI_AGENT: "purge" },
     })
 
     const localTools: LocalToolRegistry = createLocalTools(options.wikiRoot)

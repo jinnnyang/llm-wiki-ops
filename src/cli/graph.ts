@@ -7,6 +7,7 @@
 import { Command } from "commander"
 import * as fs from "node:fs/promises"
 import { WikiGraph } from "../index.js"
+import { computeUsageStats } from "../core/usage.js"
 import { WikiGraphError } from "../utils/errors.js"
 import { resolveTarget } from "./wiki-resolve.js"
 
@@ -110,7 +111,7 @@ export async function withWiki(
   maintainIndex: boolean,
   fn: (wiki: WikiGraph) => Promise<unknown>,
 ): Promise<void> {
-  const wiki = new WikiGraph(wikiRoot, { maintainIndex })
+  const wiki = new WikiGraph(wikiRoot, { maintainIndex, actor: "cli" })
   await wiki.validate()
   await wiki.cleanup()
   try {
@@ -118,6 +119,9 @@ export async function withWiki(
     output(result, json)
   } catch (e) {
     handleError(e, json)
+  } finally {
+    // Buffered read events would otherwise die with the process (§4.4).
+    await wiki.flushUsageLog()
   }
 }
 
@@ -141,10 +145,11 @@ export async function withWikiRead(
   // Global mode: parallel across all wikis (read-only, skip cleanup)
   const settled = await Promise.allSettled(
     target.paths.map(async (wikiPath) => {
-      const wiki = new WikiGraph(wikiPath, { maintainIndex })
+      const wiki = new WikiGraph(wikiPath, { maintainIndex, actor: "cli" })
       await wiki.validate()
       // Skip cleanup() — read-only, no writes to clean up
       const result = await fn(wiki)
+      await wiki.flushUsageLog()
       return { wiki: wikiPath, result }
     }),
   )
@@ -399,6 +404,29 @@ export function createGraphCommand(): Command {
           upcomingDays: safeInt(opts.upcoming as string | undefined, "--upcoming"),
         }),
       )
+    })
+
+  graph
+    .command("usage")
+    .description("Usage log statistics: per-node read/write counts, most/least used nodes")
+    .option("--days <n>", "window size in days (default 30)")
+    .option("--top <n>", "how many most-used nodes to show (default 64)")
+    .option("--bottom <n>", "how many least-used nodes to show, including never-touched (default 64)")
+    .option("--actor <name>", "only count events from this actor (ingest/research/check/reason/purge/dream/cli/mcp/lib)")
+    .option("--json", "machine-readable JSON output")
+    .option("--wiki <path>", "wiki root directory")
+    .action(async (opts: Record<string, unknown>) => {
+      await withWikiRead(opts.wiki as string | undefined, !!opts.json, true, async (wiki) => {
+        // Full slug set so bottom-N can surface never-touched nodes (§4.5).
+        const graphData = await wiki.readGraph()
+        return computeUsageStats(wiki.wikiRoot, {
+          days: safeInt(opts.days as string | undefined, "--days"),
+          topN: safeInt(opts.top as string | undefined, "--top"),
+          bottomN: safeInt(opts.bottom as string | undefined, "--bottom"),
+          actor: opts.actor as string | undefined,
+          allSlugs: graphData.nodes.map((n) => n.slug),
+        })
+      })
     })
 
   return graph

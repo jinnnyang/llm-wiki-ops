@@ -93,6 +93,7 @@
 - **写路径**：await 后再返回。写本已被 proper-lockfile 全局串行化（`wiki-lock.ts`），多一次 append 是噪声级开销。
 - **并发 append**（多 agent MCP 进程 + CLI 同时操作一个 wiki）：无需加锁。每次 flush 是单次 write 调用；Windows `FILE_APPEND_DATA` 单次调用原子。批 <4KB。
 - usage 文件在 `wiki/` 之外 → `scanWiki` 与常驻图零影响。
+- **进程退出前必须 flush（实施时端到端发现）**：读事件是缓冲的，而 MCP 是 stdio 短进程、CLI 是一次性命令——不显式 flush 就会整批丢失（首次 e2e 验证时 MCP 侧 `read_graph` 一条读事件都没落盘）。落点：`WikiGraph.flushUsageLog()`；MCP 在**每次工具调用的 finally** 里 flush（进程随时可能被杀，不能只靠退出钩子），CLI 在 `withWiki`/全局模式收尾 flush。
 
 ### 4.5 统计 API（纯代码，零 LLM）
 

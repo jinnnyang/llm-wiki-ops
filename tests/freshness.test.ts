@@ -152,7 +152,7 @@ created: "2020-01-01"
   it("classifies due / upcoming / skipped correctly", async () => {
     const fixture = await makeFreshnessFixture()
     try {
-      const wiki = new WikiGraph(fixture.root)
+      const wiki = new WikiGraph(fixture.root, { maintainLog: false })
       const result = await wiki.scanFreshness({ today: "2026-05-15", upcomingDays: 30 })
 
       expect(result.totalScanned).toBe(4)
@@ -182,7 +182,7 @@ created: "2020-01-01"
   it("throws on invalid today date", async () => {
     const fixture = await makeFreshnessFixture()
     try {
-      const wiki = new WikiGraph(fixture.root)
+      const wiki = new WikiGraph(fixture.root, { maintainLog: false })
       await expect(wiki.scanFreshness({ today: "not-a-date" })).rejects.toThrow(/invalid today/)
     } finally {
       await fixture.cleanup()

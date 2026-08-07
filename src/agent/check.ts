@@ -204,7 +204,7 @@ export async function runCheck(options: CheckOptions): Promise<AgentResult> {
       transport: "stdio",
       command: "node",
       args: [join(import.meta.dirname, "..", "mcp", "index.js")],
-      env: { SELECTED_WIKI: options.wikiRoot },
+      env: { SELECTED_WIKI: options.wikiRoot, WIKI_AGENT: "check" },
     })
 
     for (const server of options.searchServers ?? []) {

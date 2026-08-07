@@ -10,7 +10,7 @@ let wiki: WikiGraph
 
 beforeEach(async () => {
   fixture = await createFixtureWiki()
-  wiki = new WikiGraph(fixture.root)
+  wiki = new WikiGraph(fixture.root, { maintainLog: false })
 })
 
 afterEach(async () => {

@@ -122,6 +122,7 @@ export async function runIngest(options: IngestOptions): Promise<AgentResult> {
     transport: "stdio",
     command: "node",
     args: ["dist/src/mcp/index.js", "--wiki", wikiRoot],
+    env: { WIKI_AGENT: "ingest" },
   })
 
   try {

@@ -251,7 +251,7 @@ export async function runReason(options: ReasonOptions): Promise<AgentResult> {
       transport: "stdio",
       command: "node",
       args: [join(import.meta.dirname, "..", "mcp", "index.js")],
-      env: { SELECTED_WIKI: options.wikiRoot },
+      env: { SELECTED_WIKI: options.wikiRoot, WIKI_AGENT: "reason" },
     })
 
     const localTools: LocalToolRegistry = createLocalTools(options.wikiRoot, {

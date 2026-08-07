@@ -5,15 +5,38 @@
  * clear the A′ file-level scan cache — releaseResident() does both).
  */
 
+import * as path from "node:path"
+
 import { WikiGraph } from "../index.js"
 
 /** Max simultaneously resident wikis (§6.2). */
 export const WIKI_CACHE_MAX = 3
 
+/**
+ * Trust window for MCP-resident graphs, in ms (dream.md §4.6).
+ *
+ * Not 0: several agent processes operate on one wiki concurrently (dream while
+ * check runs, reason while ingest writes), so "this process owns the wiki" does
+ * not hold. A 30s window bounds how long a reader can act on a stale graph;
+ * revalidation costs a ~90ms warm stat pass.
+ */
+export const MCP_TRUST_WINDOW_MS = 30_000
+
 export class WikiCache {
   private readonly cache = new Map<string, WikiGraph>()
 
   constructor(private readonly max: number = WIKI_CACHE_MAX) {}
+
+  /**
+   * Cache key: the same canonicalization WikiGraph applies to wikiRoot, so
+   * "C:\Wiki" and "c:\wiki" map to one instance instead of two (dream.md §4.6).
+   */
+  private key(root: string): string {
+    const resolved = path.resolve(root)
+    return process.platform === "win32" || process.platform === "darwin"
+      ? resolved.toLowerCase()
+      : resolved
+  }
 
   /** Number of cached instances. */
   get size(): number {
@@ -33,10 +56,11 @@ export class WikiCache {
    * the agent only notices a ~90ms lazy rebuild on next access.
    */
   get(root: string): WikiGraph {
-    const existing = this.cache.get(root)
+    const key = this.key(root)
+    const existing = this.cache.get(key)
     if (existing) {
-      this.cache.delete(root)
-      this.cache.set(root, existing)
+      this.cache.delete(key)
+      this.cache.set(key, existing)
       return existing
     }
 
@@ -46,13 +70,17 @@ export class WikiCache {
       this.cache.delete(oldest)
     }
 
-    const wiki = new WikiGraph(root, { resident: true, trustWindowMs: 0 })
-    this.cache.set(root, wiki)
+    const wiki = new WikiGraph(root, {
+      resident: true,
+      trustWindowMs: MCP_TRUST_WINDOW_MS,
+      actor: process.env.WIKI_AGENT ?? "mcp",
+    })
+    this.cache.set(key, wiki)
     return wiki
   }
 
   /** Peek without touching LRU order (tests / diagnostics). */
   peek(root: string): WikiGraph | undefined {
-    return this.cache.get(root)
+    return this.cache.get(this.key(root))
   }
 }

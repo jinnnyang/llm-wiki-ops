@@ -242,7 +242,13 @@ export interface CleanupResult {
 
 export interface WikiGraphOptions {
   maintainIndex?: boolean // default true
-  maintainLog?: boolean // default false
+  /**
+   * Usage log: append one JSONL event per facade operation to
+   * <wikiRoot>/.llm-wiki-ops/usage/YYYY-MM-DD.jsonl (design: dream.md §4).
+   * Default true — it is a baseline capability, not a dream add-on.
+   * Tests pass false to keep fixtures clean.
+   */
+  maintainLog?: boolean // default true
   strictVerify?: boolean // default false (sha256 in optimistic check)
   slugStrategy?: "preserve-cjk" | "pinyin" | "ascii-only" // v1: preserve-cjk only
   /**
@@ -259,6 +265,47 @@ export interface WikiGraphOptions {
    * Ignored when resident=false. (design: resident-graph.md §5.2)
    */
   trustWindowMs?: number
+  /**
+   * Who is operating, recorded in every usage log event (dream.md §4.2).
+   * MCP server passes process.env.WIKI_AGENT ?? "mcp"; CLI passes "cli".
+   * Default "lib" (library consumers).
+   */
+  actor?: UsageActor
+}
+
+// ── Usage log (design: dream.md §4) ─────────────────────────────────
+
+/**
+ * Who is performing the operation. Recorded, never enforced — the env-based
+ * trust model is spoofable by design (single-user local tool: a mirror, not
+ * a bridle). dream.md §4.2.
+ */
+export type UsageActor =
+  | "ingest"
+  | "research"
+  | "check"
+  | "reason"
+  | "purge"
+  | "dream"
+  | "cli"
+  | "mcp"
+  | "lib"
+  | (string & {})
+
+/** One line of <wikiRoot>/.llm-wiki-ops/usage/YYYY-MM-DD.jsonl (dream.md §4.3). */
+export interface UsageEvent {
+  /** ISO-8601 with ms, UTC. */
+  ts: string
+  /** Facade method name in snake_case: get_node, add_edge, … */
+  op: string
+  /** Target slug; two-element array for edge ops; null for target-less ops. */
+  slug: string | [string, string] | null
+  actor: UsageActor
+  /** Present only when true — a dry-run write attempt is still a signal. */
+  dry?: true
+  ok: boolean
+  /** Error code/message when ok is false — negative signal is signal too. */
+  err?: string
 }
 
 // ── Type → directory mapping ────────────────────────────────────────

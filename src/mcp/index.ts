@@ -6,7 +6,7 @@
  * agent-layer.md §11.3, §11.4 (original MCP design).
  *
  * Single instance + default wiki + optional per-tool override.
- * 13 tools exposed. cleanup() called once at server.init().
+ * 14 tools exposed. cleanup() called once at server.init().
  *
  * Default wiki resolution (§11.2):
  *   --wiki <path-or-slug>  >  SELECTED_WIKI env  >  WIKI_ROOT env (deprecated)  >  error
@@ -21,6 +21,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import { WikiGraph } from "../index.js"
+import { computeUsageStats } from "../core/usage.js"
 import { ResultTooLargeError, WikiGraphError } from "../utils/errors.js"
 import { resolveDefaultWikiRoot } from "./resolve.js"
 import { WikiCache } from "./wiki-cache.js"
@@ -276,6 +277,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         additionalProperties: false,
       },
     },
+    {
+      name: "usage_stats",
+      description:
+        "Access statistics from the usage log (design doc dream.md §4.5): per-node read/write counts over a day window, broken down by actor. top = most used, bottom = least used INCLUDING never-touched nodes (joined against the full slug set). Pure code, zero LLM. Use it to find what the wiki actually pays attention to (salience) and what has been forgotten — the dream agent's candidate signal.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          days: { type: "number", description: "Window size in days (default 30)" },
+          top: { type: "number", description: "How many most-used nodes to return (default 64)" },
+          bottom: { type: "number", description: "How many least-used nodes to return (default 64)" },
+          actor: {
+            type: "string",
+            description: "Only count events from this actor (ingest/research/check/reason/purge/dream/cli/mcp/lib)",
+          },
+          selected_wiki: selectedWikiProp,
+        },
+        additionalProperties: false,
+      },
+    },
   ],
 }))
 
@@ -395,6 +415,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         })
         break
 
+      case "usage_stats": {
+        // Pass the full slug set so bottom-N includes never-touched nodes
+        // ("least used" must mean "including the forgotten ones", §4.5).
+        const graph = await wiki.readGraph()
+        result = await computeUsageStats(wiki.wikiRoot, {
+          days: args?.days as number | undefined,
+          topN: args?.top as number | undefined,
+          bottomN: args?.bottom as number | undefined,
+          actor: args?.actor as string | undefined,
+          allSlugs: graph.nodes.map((n) => n.slug),
+        })
+        break
+      }
+
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true }
     }
@@ -426,6 +460,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [{ type: "text", text: `Internal error: ${(e as Error).message}` }],
       isError: true,
     }
+  } finally {
+    // A stdio MCP server is a short-lived process that can be killed at any
+    // moment, and read events are buffered by design (§4.4). Flush after every
+    // tool call so no signal dies with the process.
+    await getWiki(selectedWiki).flushUsageLog()
   }
 })
 

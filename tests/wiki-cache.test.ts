@@ -9,7 +9,7 @@
 
 import { describe, it, expect, afterEach } from "vitest"
 
-import { WikiCache, WIKI_CACHE_MAX } from "../src/mcp/wiki-cache.js"
+import { WikiCache, WIKI_CACHE_MAX, MCP_TRUST_WINDOW_MS } from "../src/mcp/wiki-cache.js"
 import { clearScanCache } from "../src/core/graph-builder.js"
 
 const roots = ["a", "b", "c", "d"].map((n) => `/tmp-fake-wiki-${n}`)
@@ -23,11 +23,29 @@ describe("WikiCache", () => {
     expect(WIKI_CACHE_MAX).toBe(3)
   })
 
-  it("creates resident instances with trustWindowMs=0", () => {
+  it("creates resident instances with a non-zero trust window", () => {
+    // Was trustWindowMs=0 ("this process owns the wiki"). That assumption does
+    // not hold once several agents operate on one wiki concurrently, so reads
+    // revalidate after the window expires (dream.md §4.6).
     const cache = new WikiCache()
     const wiki = cache.get(roots[0])
     expect(wiki.resident).toBe(true)
-    expect(wiki.trustWindowMs).toBe(0)
+    expect(wiki.trustWindowMs).toBe(MCP_TRUST_WINDOW_MS)
+    expect(MCP_TRUST_WINDOW_MS).toBeGreaterThan(0)
+  })
+
+  it("normalizes the cache key so case variants share one instance", () => {
+    // Windows/macOS: "C:\Wiki" and "c:\wiki" are the same directory; two
+    // instances would mean two A′ caches and a broken incremental rebuild.
+    const cache = new WikiCache()
+    const wiki = cache.get(roots[0])
+    const variant = roots[0].toUpperCase()
+    if (process.platform === "win32" || process.platform === "darwin") {
+      expect(cache.get(variant)).toBe(wiki)
+      expect(cache.size).toBe(1)
+    } else {
+      expect(cache.size).toBe(1) // case-sensitive FS: variant is a different path
+    }
   })
 
   it("same root returns the same instance (idempotent)", () => {

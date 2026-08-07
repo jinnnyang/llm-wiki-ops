@@ -28,7 +28,7 @@ beforeAll(async () => {
   // Fresh copy every run — e2e tests mutate the wiki in-place
   await fs.rm(WIKI_ROOT, { recursive: true, force: true })
   await fs.cp(SOURCE_WIKI, WIKI_ROOT, { recursive: true })
-  wiki = new WikiGraph(WIKI_ROOT)
+  wiki = new WikiGraph(WIKI_ROOT, { maintainLog: false })
 }, 60_000)
 
 afterAll(async () => {
