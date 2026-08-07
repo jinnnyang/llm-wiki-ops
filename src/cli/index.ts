@@ -564,12 +564,23 @@ program
     const wikiRoot = target.paths[0]
     const { runDream } = await import("../agent/dream.js")
     try {
+      // Validate up front: a bad --certainty used to sail through as NaN and
+      // silently produce a dream with zero scenes.
+      let certainty: number | undefined
+      if (opts.certainty !== undefined) {
+        certainty = parseFloat(opts.certainty as string)
+        if (!Number.isFinite(certainty) || certainty < 0 || certainty > 1) {
+          console.error(`Error: --certainty must be a number between 0 and 1 (got "${opts.certainty}")`)
+          process.exit(1)
+        }
+      }
+
       const result = await runDream({
         wikiRoot,
         theme,
         pressureOnly: !!opts.pressure,
         dreamsDir: opts.dreamsDir as string | undefined,
-        certainty: opts.certainty ? parseFloat(opts.certainty as string) : undefined,
+        certainty,
         maxIterations: opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined,
         timeoutMs: opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined,
         verbose: !!opts.verbose,
@@ -581,6 +592,20 @@ program
         if (opts.json) console.log(JSON.stringify(result.pressure, null, 2))
         else console.log(result.finalMessage)
         return
+      }
+
+      // Print the scenes from the pure-code walk BEFORE the model's report.
+      // The report is prose and models have been seen misdescribing their own
+      // inputs ("0 scenes" when seven were injected); this block is ground truth.
+      if (!opts.json && result.scenes?.length) {
+        console.log(`\n── Dream scenes (${result.scenes.length}, seed ${result.seed}) ───────────`)
+        result.scenes.forEach((scene, i) => {
+          const walk = scene.hops.length
+            ? scene.nodes[0] +
+              scene.hops.map((h) => `${h.via === "edge" ? " —edge→ " : " ⇢tp⇢ "}${h.to}`).join("")
+            : scene.nodes[0]
+          console.log(`  ${i + 1}. ${walk}`)
+        })
       }
       printAgentResult(result, opts)
     } catch (err) {

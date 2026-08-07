@@ -6,7 +6,7 @@
  * No run_shell (security). All paths sandboxed to wiki root.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs"
 import { resolve, relative, join, dirname } from "node:path"
 import type { ToolDefinition } from "./openai.js"
 import { loadEnv } from "./env.js"
@@ -133,6 +133,11 @@ function toolWriteFile(wikiRoot: string, args: Record<string, unknown>): LocalTo
   }
 
   try {
+    // Create the parent directory when missing. Without this, writing the very
+    // first file into a new subtree (e.g. the dream agent's wiki/dreams/ on a
+    // wiki that has never dreamt) fails with ENOENT — the agent then retries
+    // blindly and loses its work. The path is already sandbox-checked above.
+    mkdirSync(dirname(resolved), { recursive: true })
     writeFileSync(resolved, content, "utf-8")
     return { content: `Written ${Buffer.byteLength(content)} bytes to ${path}` }
   } catch (e) {

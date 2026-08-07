@@ -16,6 +16,7 @@
  */
 
 import { join, relative, resolve, isAbsolute } from "node:path"
+import * as fs from "node:fs/promises"
 
 import { runAgent, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
@@ -321,7 +322,9 @@ You are told your iteration and time budget up front and will NOT be reminded. W
 - **Connections written**: edges added, with the relation and why.
 - **Dream pages created**: path + the question each one raises.
 - **Compression**: which nodes moved down a level, and why they deserved it.
-- **Threads still open**: anything you could not settle — these carry to the next dream.`
+- **Threads still open**: anything you could not settle — these carry to the next dream.
+
+Report accuracy is not optional. The scene list at the top of your instructions is your ground truth: report exactly that many scenes and refer to them by number. Never claim you were given zero scenes, or that the graph was "too small to walk", when scenes are listed — if you worked from them (you did), say so. A report that misdescribes its own inputs is worse than a short one, because the next dream reads it.`
 
 // ── Runner ──────────────────────────────────────────────────────────
 
@@ -412,6 +415,30 @@ function renderContext(
   const { tuning, pressure, salience, scenes, threads } = prep
   const lines: string[] = []
 
+  // Scenes come FIRST and loudly: they are the working material, not trivia.
+  // Buried further down (after pressure and salience) a model will skim past
+  // them and report "no scenes were provided" while re-deriving the same
+  // insight by hand — observed in the first live run.
+  lines.push(`# YOUR DREAM MATERIAL: ${scenes.length} scenes`)
+  lines.push("")
+  lines.push(
+    `These are seeded random walks through the graph — the nodes that ended up together in this dream. Work through them one by one; they are the reason you are awake. "⇢teleport⇢" means the two nodes are NOT connected in the graph and were put side by side on purpose: that is where a connection nobody wrote down is most likely to hide.`,
+  )
+  lines.push("")
+  scenes.forEach((scene, i) => {
+    const walk = scene.hops.length
+      ? scene.nodes[0] +
+        scene.hops.map((h) => `${h.via === "edge" ? " —edge→ " : " ⇢teleport⇢ "}${h.to}`).join("")
+      : scene.nodes[0]
+    lines.push(`**Scene ${i + 1}:** ${walk}`)
+  })
+  if (scenes.length === 0) {
+    lines.push(
+      `(none — the wiki is empty or has too few pages to walk. Fall back to the salience table below.)`,
+    )
+  }
+
+  lines.push("", "---", "")
   lines.push(`Wiki root: ${options.wikiRoot}`)
   lines.push(`Dreams directory: ${dreamsDir}/`)
   lines.push(`Today: ${prep.today}`)
@@ -434,15 +461,6 @@ function renderContext(
   for (const c of pressure.components) {
     lines.push(`- ${c.name}: ${c.count} × ${c.weight} = ${c.contribution}`)
   }
-
-  lines.push("", `## Dream scenes (${scenes.length})`)
-  scenes.forEach((scene, i) => {
-    const walk = scene.hops.length
-      ? scene.nodes[0] +
-        scene.hops.map((h) => `${h.via === "edge" ? " —edge→ " : " ⇢teleport⇢ "}${h.to}`).join("")
-      : scene.nodes[0]
-    lines.push(`${i + 1}. ${walk}`)
-  })
 
   lines.push("", `## Salience (top 20 of ${salience.length}; raw components, overrule freely)`)
   lines.push(`| slug | score | usage30 | inDeg | overdue | days since check |`)
@@ -521,6 +539,11 @@ export async function runDream(options: DreamOptions): Promise<DreamResult> {
   const llmConfig = options.llmConfig ?? resolveLlmConfig()
   const mcp = new McpClient()
 
+  // Create the dreams directory up front. The local write tool creates parents
+  // on demand too, but doing it here means list_directory works from the first
+  // iteration and the agent never sees a confusing ENOENT on a fresh wiki.
+  await fs.mkdir(join(options.wikiRoot, dreamsDir), { recursive: true })
+
   try {
     await mcp.connect({
       name: "wiki",
@@ -544,7 +567,7 @@ export async function runDream(options: DreamOptions): Promise<DreamResult> {
 
 Budget: at most ${maxIterations} tool-call iterations and ${timeoutMin} minutes. You will NOT be reminded — pace yourself and leave room to write the report.
 
-Dream now. Work through the scenes, give each candidate connection a three-valued verdict, record what you find, and let what nobody uses decay one step.`
+Dream now. Start from the ${prep.scenes.length} scenes above — read the nodes in each one, give every candidate connection a three-valued verdict, record what you find, and let what nobody uses decay one step.`
 
     const result = await runAgent(
       {
@@ -574,6 +597,10 @@ Dream now. Work through the scenes, give each candidate connection a three-value
         date: prep.today,
         seed: prep.seed,
         pressure: prep.pressure,
+        // Scenes are recorded from the pure-code walk, never from the model's
+        // prose. Models have been observed reporting "0 scenes" while actually
+        // working from them; the journal must carry what was really injected.
+        scenes: prep.scenes.map((s) => ({ nodes: s.nodes, hops: s.hops })),
         candidates: prep.salience.slice(0, 20).map((s) => ({
           slug: s.slug,
           salience: s.score,

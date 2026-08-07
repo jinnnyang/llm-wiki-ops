@@ -91,7 +91,9 @@ export function pEdgeFor(t: DreamTuning): number {
 /** Lower certainty → more seeds and a higher epsilon floor: a wider dream. */
 export function seedCountFor(t: DreamTuning): number {
   const [lo, hi] = t.seedCountRange
-  return Math.round(hi - (hi - lo) * clamp01(t.certainty))
+  const n = Math.round(hi - (hi - lo) * clamp01(t.certainty))
+  // Always walk at least one seed: a dream with zero scenes is not a dream.
+  return Number.isFinite(n) && n > 0 ? n : Math.max(1, lo)
 }
 
 export function epsilonFor(t: DreamTuning): number {
@@ -100,6 +102,11 @@ export function epsilonFor(t: DreamTuning): number {
 }
 
 function clamp01(n: number): number {
+  // NaN must not propagate: a NaN certainty turns seedCount into NaN, which
+  // makes the seed loop run zero times and silently produces a dream with no
+  // scenes at all. Observed in a live run where the CLI passed through an
+  // unparseable --certainty. Fall back to the default instead of failing quietly.
+  if (!Number.isFinite(n)) return DREAM_DEFAULTS.certainty
   return Math.max(0, Math.min(1, n))
 }
 
@@ -109,6 +116,11 @@ export interface JournalEntry {
   date: string
   seed: string
   pressure?: PressureReport
+  /**
+   * The scenes actually injected, recorded from the pure-code walk rather than
+   * from the model's report — a model may misdescribe its own inputs.
+   */
+  scenes?: Array<{ nodes: string[]; hops: Array<{ from: string; to: string; via: "edge" | "teleport" }> }>
   candidates?: Array<{ slug: string; salience: number; usage30: number; inDegree: number; overdueDays: number }>
   /** Threads left unresolved by this dream — next dream revisits them first. */
   threads_carried?: string[]

@@ -101,6 +101,20 @@ describe("tuning derivation", () => {
     expect(pEdgeFor(resolveTuning({ certainty: 5 }))).toBeLessThanOrEqual(1)
     expect(pEdgeFor(resolveTuning({ certainty: -3 }))).toBeGreaterThanOrEqual(0)
   })
+
+  it("survives a NaN certainty instead of silently producing zero scenes", () => {
+    // Regression: NaN certainty made seedCountFor return NaN, the seed loop ran
+    // zero times, and the dream came back with no scenes at all — a silent
+    // failure found only by running the agent for real.
+    const t = resolveTuning({ certainty: NaN })
+    expect(seedCountFor(t)).toBeGreaterThan(0)
+    expect(Number.isFinite(epsilonFor(t))).toBe(true)
+    expect(Number.isFinite(pEdgeFor(t))).toBe(true)
+  })
+
+  it("always walks at least one seed, even with a degenerate seed range", () => {
+    expect(seedCountFor(resolveTuning({ seedCountRange: [0, 0] }))).toBeGreaterThanOrEqual(1)
+  })
 })
 
 // ── Pressure (§5.2) ─────────────────────────────────────────────────
