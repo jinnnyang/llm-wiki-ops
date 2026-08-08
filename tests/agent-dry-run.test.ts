@@ -38,11 +38,14 @@ describe("deriveChanges", () => {
     expect(deriveChanges([log("add_node", {})])).toEqual([])
   })
 
-  it("rename_node: reports new_slug", () => {
+  it("rename_node: reports new_slug, marked as a slug not a path", () => {
+    // The type directory isn't in the tool args, so a real path can't be
+    // derived without guessing — the "slug:" prefix keeps the Changes block
+    // honest instead of printing a half-broken path.
     const changes = deriveChanges([
       log("rename_node", { old_slug: "old-name", new_slug: "new-name" }),
     ])
-    expect(changes).toEqual([{ file: "new-name", action: "modified" }])
+    expect(changes).toEqual([{ file: "slug:new-name", action: "modified" }])
   })
 
   it("write_file and edit_file: report the path", () => {
@@ -56,14 +59,14 @@ describe("deriveChanges", () => {
     ])
   })
 
-  it("update_node / delete_node: report the slug", () => {
+  it("update_node / delete_node: report the slug, marked as such", () => {
     const changes = deriveChanges([
       log("update_node", { slug: "deepseek" }),
       log("delete_node", { slug: "stale-page" }),
     ])
     expect(changes).toEqual([
-      { file: "deepseek", action: "modified" },
-      { file: "stale-page", action: "deleted" },
+      { file: "slug:deepseek", action: "modified" },
+      { file: "slug:stale-page", action: "deleted" },
     ])
   })
 

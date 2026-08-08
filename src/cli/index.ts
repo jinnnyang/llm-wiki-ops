@@ -583,7 +583,6 @@ program
         certainty,
         maxIterations: opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined,
         timeoutMs: opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined,
-        verbose: !!opts.verbose,
         dryRun: !!opts.dryRun,
       })
 
@@ -602,7 +601,9 @@ program
         result.scenes.forEach((scene, i) => {
           const walk = scene.hops.length
             ? scene.nodes[0] +
-              scene.hops.map((h) => `${h.via === "edge" ? " —edge→ " : " ⇢tp⇢ "}${h.to}`).join("")
+              scene.hops
+                .map((h) => `${h.via === "edge" ? " —edge→ " : h.via === "teleport" ? " ⇢tp⇢ " : " ·de· "}${h.to}`)
+                .join("")
             : scene.nodes[0]
           console.log(`  ${i + 1}. ${walk}`)
         })

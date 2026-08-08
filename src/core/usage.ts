@@ -97,35 +97,52 @@ export class UsageLogger {
   }
 
   /**
-   * Write buffered lines to today's file. Concurrent callers share one
-   * in-flight flush; a failure increments errorCount and is otherwise silent.
+   * Write buffered lines to today's file.
+   *
+   * The batch is taken from the buffer BEFORE checking for an in-flight flush,
+   * and concurrent flushes chain instead of sharing one promise. Getting this
+   * wrong is subtle and silent: the earlier version cleared the timer, saw a
+   * flush in flight, and returned that flush's promise while its own lines
+   * stayed in the buffer with nothing scheduled to write them — so an awaited
+   * flush() could resolve with the caller's events still in memory, which is
+   * exactly the durability the write path relies on (§4.4).
    */
   async flush(): Promise<void> {
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null
     }
-    if (this.buffer.length === 0) return
-    if (this.flushing) return this.flushing
+    if (this.buffer.length === 0) {
+      // Nothing of our own to write, but an earlier batch may still be in the
+      // air — await it so callers get a real durability guarantee.
+      return this.flushing ?? undefined
+    }
 
     const batch = this.buffer.join("")
     this.buffer = []
     this.bufferedBytes = 0
 
-    this.flushing = (async () => {
-      const file = usageFileFor(this.wikiRoot)
-      try {
-        await fs.mkdir(path.dirname(file), { recursive: true })
-        await fs.appendFile(file, batch, "utf8")
-        await this.maybePrune(path.basename(file, ".jsonl"))
-      } catch {
-        this.errorCount++
-      }
-    })().finally(() => {
-      this.flushing = null
+    const previous = this.flushing ?? Promise.resolve()
+    const chained = previous.then(() => this.append(batch))
+    this.flushing = chained.finally(() => {
+      // Only the newest link clears the marker, so a later flush still chains
+      // onto an in-flight one instead of racing it.
+      if (this.flushing === chained) this.flushing = null
     })
 
     return this.flushing
+  }
+
+  /** Append one batch; failures are counted, never thrown (telemetry, not truth). */
+  private async append(batch: string): Promise<void> {
+    const file = usageFileFor(this.wikiRoot)
+    try {
+      await fs.mkdir(path.dirname(file), { recursive: true })
+      await fs.appendFile(file, batch, "utf8")
+      await this.maybePrune(path.basename(file, ".jsonl"))
+    } catch {
+      this.errorCount++
+    }
   }
 
   /** Once per day, drop day-files older than the retention window. */
@@ -161,6 +178,13 @@ export interface UsageStatsOptions {
   bottomN?: number
   /** Only count events from this actor. */
   actor?: string
+  /**
+   * Ignore events from this actor. The dream agent excludes its own reads:
+   * otherwise every node it inspects scores higher tomorrow, gets picked again,
+   * and scores higher still — the same self-feeding loop that made touch use
+   * the checked clock instead of updated.
+   */
+  excludeActor?: string
   /**
    * Full slug universe, so bottom-N can include never-touched nodes.
    * Callers with a resident graph should pass its slugs (avoids a rescan).
@@ -290,6 +314,7 @@ export async function computeUsageStats(
 
     for (const ev of events) {
       if (opts?.actor && ev.actor !== opts.actor) continue
+      if (opts?.excludeActor && ev.actor === opts.excludeActor) continue
       totalEvents++
       if (ev.slug === null) {
         interfaceEvents++

@@ -418,13 +418,13 @@ export function createGraphCommand(): Command {
     .action(async (opts: Record<string, unknown>) => {
       await withWikiRead(opts.wiki as string | undefined, !!opts.json, true, async (wiki) => {
         // Full slug set so bottom-N can surface never-touched nodes (§4.5).
-        const graphData = await wiki.readGraph()
+        // listSlugs, not readGraph: readGraph throws past 200 nodes.
         return computeUsageStats(wiki.wikiRoot, {
           days: safeInt(opts.days as string | undefined, "--days"),
           topN: safeInt(opts.top as string | undefined, "--top"),
           bottomN: safeInt(opts.bottom as string | undefined, "--bottom"),
           actor: opts.actor as string | undefined,
-          allSlugs: graphData.nodes.map((n) => n.slug),
+          allSlugs: await wiki.listSlugs(),
         })
       })
     })

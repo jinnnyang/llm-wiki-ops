@@ -5,9 +5,7 @@
  * clear the A′ file-level scan cache — releaseResident() does both).
  */
 
-import * as path from "node:path"
-
-import { WikiGraph } from "../index.js"
+import { WikiGraph, wikiRootCacheKey } from "../index.js"
 
 /** Max simultaneously resident wikis (§6.2). */
 export const WIKI_CACHE_MAX = 3
@@ -28,14 +26,12 @@ export class WikiCache {
   constructor(private readonly max: number = WIKI_CACHE_MAX) {}
 
   /**
-   * Cache key: the same canonicalization WikiGraph applies to wikiRoot, so
-   * "C:\Wiki" and "c:\wiki" map to one instance instead of two (dream.md §4.6).
+   * Cache key: reuses WikiGraph's canonicalization so "C:\Wiki" and "c:\wiki"
+   * map to one instance instead of two (dream.md §4.6). Shared helper rather
+   * than a second copy, so the two can never drift apart.
    */
   private key(root: string): string {
-    const resolved = path.resolve(root)
-    return process.platform === "win32" || process.platform === "darwin"
-      ? resolved.toLowerCase()
-      : resolved
+    return wikiRootCacheKey(root)
   }
 
   /** Number of cached instances. */

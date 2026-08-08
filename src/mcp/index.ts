@@ -423,13 +423,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "usage_stats": {
         // Pass the full slug set so bottom-N includes never-touched nodes
         // ("least used" must mean "including the forgotten ones", §4.5).
-        const graph = await wiki.readGraph()
+        // listSlugs, not readGraph: the latter throws past 200 nodes.
         result = await computeUsageStats(wiki.wikiRoot, {
           days: args?.days as number | undefined,
           topN: args?.top as number | undefined,
           bottomN: args?.bottom as number | undefined,
           actor: args?.actor as string | undefined,
-          allSlugs: graph.nodes.map((n) => n.slug),
+          allSlugs: await wiki.listSlugs(),
         })
         break
       }

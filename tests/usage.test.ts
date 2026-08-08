@@ -112,6 +112,47 @@ describe("UsageLogger", () => {
     expect(await readToday()).toHaveLength(2)
   })
 
+  it("does not drop a batch recorded while another flush is in flight", async () => {
+    // Regression: flush() cleared the timer, saw an in-flight flush, and
+    // returned THAT promise while its own lines stayed in the buffer with
+    // nothing scheduled to write them — so an awaited flush() resolved with the
+    // caller's events still in memory. The write path's durability depends on
+    // this not happening (§4.4).
+    const logger = new UsageLogger(root, "lib")
+    logger.record({ op: "get_node", slug: "a", ok: true })
+    const first = logger.flush()
+    logger.record({ op: "get_node", slug: "b", ok: true })
+    const second = logger.flush()
+    await Promise.all([first, second])
+
+    const slugs = (await readToday()).map((e) => e.slug)
+    expect(slugs).toContain("a")
+    expect(slugs).toContain("b")
+  })
+
+  it("flush() with an empty buffer still awaits an in-flight batch", async () => {
+    const logger = new UsageLogger(root, "lib")
+    logger.record({ op: "get_node", slug: "a", ok: true })
+    const inFlight = logger.flush()
+    await logger.flush() // buffer empty, but must not resolve before the batch lands
+    await inFlight
+    expect((await readToday()).map((e) => e.slug)).toContain("a")
+  })
+
+  it("keeps every event across many interleaved flushes", async () => {
+    const logger = new UsageLogger(root, "lib")
+    const pending: Promise<void>[] = []
+    for (let i = 0; i < 30; i++) {
+      logger.record({ op: "get_node", slug: `n${i}`, ok: true })
+      pending.push(logger.flush())
+    }
+    await Promise.all(pending)
+    await logger.flush()
+
+    const slugs = (await readToday()).map((e) => e.slug)
+    expect(new Set(slugs).size).toBe(30)
+  })
+
   it("never throws when the log directory cannot be written", async () => {
     // Point the root at a file, so mkdir of <file>/.llm-wiki-ops fails.
     const filePath = path.join(root, "not-a-dir")
@@ -243,6 +284,21 @@ describe("computeUsageStats", () => {
     const stats = await computeUsageStats(root)
     expect(stats).toMatchObject({ totalEvents: 0, filesRead: 0, top: [], bottom: [] })
   })
+
+  it("excludes one actor's events on request (dream's own reads)", async () => {
+    // Without this the dream inflates tomorrow's salience for every node it
+    // read today — pick it, read it, score it higher, pick it again.
+    await seedDay(dayOffset(0), [
+      { slug: "a", actor: "dream" },
+      { slug: "a", actor: "reason" },
+      { slug: "b", actor: "dream" },
+    ])
+
+    const stats = await computeUsageStats(root, { excludeActor: "dream" })
+    expect(stats.totalEvents).toBe(1)
+    expect(stats.top.map((u) => u.slug)).toEqual(["a"])
+    expect(stats.top[0].byActor).toEqual({ reason: 1 })
+  })
 })
 
 // ── Facade integration ──────────────────────────────────────────────
@@ -290,13 +346,68 @@ describe("WikiGraph usage integration", () => {
     expect(failed.err).toBeTruthy()
   })
 
-  it("normalizes wikiRoot so case variants resolve to one canonical root", () => {
+  it("keeps wikiRoot's real casing and canonicalizes only the cache key", () => {
+    // The real path must never be mangled: macOS can be case-sensitive (APFS),
+    // where lowercasing would break file access outright. Identity/cache
+    // collapsing happens on cacheKey instead.
     const a = new WikiGraph(root, { maintainLog: false })
     const b = new WikiGraph(root.toUpperCase(), { maintainLog: false })
-    if (process.platform === "win32" || process.platform === "darwin") {
-      expect(b.wikiRoot).toBe(a.wikiRoot)
+
+    expect(a.wikiRoot).toBe(path.resolve(root))
+    expect(b.wikiRoot).toBe(path.resolve(root.toUpperCase())) // untouched casing
+
+    if (process.platform === "win32") {
+      expect(b.cacheKey).toBe(a.cacheKey) // one physical dir → one cache entry
     } else {
-      expect(b.wikiRoot).not.toBe(a.wikiRoot) // case-sensitive FS
+      expect(b.cacheKey).not.toBe(a.cacheKey) // case-sensitive FS: different paths
     }
+  })
+
+  it("listSlugs enumerates past readGraph's 200/500 limits", async () => {
+    // Regression: usage_stats collected allSlugs via readGraph(), which throws
+    // ResultTooLargeError above 200 nodes — so `graph usage` and the MCP
+    // usage_stats tool failed on every real wiki, including the dream agent's
+    // "what has been forgotten" signal.
+    await fs.mkdir(path.join(root, "wiki", "concepts"), { recursive: true })
+    for (let i = 0; i < 210; i++) {
+      await fs.writeFile(
+        path.join(root, "wiki", "concepts", `n${i}.md`),
+        `---\ntitle: N${i}\ntype: concept\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\nBody.\n`,
+        "utf8",
+      )
+    }
+
+    const wiki = new WikiGraph(root, { maintainLog: false })
+    const slugs = await wiki.listSlugs()
+    expect(slugs.length).toBe(210)
+
+    // readGraph still (correctly) refuses — that's why listSlugs exists.
+    await expect(wiki.readGraph()).rejects.toThrow()
+
+    // And the full usage_stats path works on a wiki this size.
+    const stats = await computeUsageStats(root, { allSlugs: slugs, bottomN: 5 })
+    expect(stats.bottom).toHaveLength(5)
+  })
+
+  it("reads the compression stage back — the forgetting loop must be closed", async () => {
+    // Regression: compression was write-only (UpdateNodePatch + node-ops wrote
+    // it, nothing read it), so "at most one level down per dream" and "only
+    // delete a skeleton" were both unobservable and unenforceable.
+    await fs.mkdir(path.join(root, "wiki", "concepts"), { recursive: true })
+    await fs.writeFile(
+      path.join(root, "wiki", "concepts", "x.md"),
+      `---\ntitle: X\ntype: concept\ncreated: 2026-01-01\nupdated: 2026-01-01\ncompression: skeleton\n---\n\nShort.\n`,
+      "utf8",
+    )
+
+    const wiki = new WikiGraph(root, { maintainLog: false })
+    expect((await wiki.getNode("x"))?.compression).toBe("skeleton")
+
+    const graph = await wiki.readGraph()
+    expect(graph.nodes.find((n) => n.slug === "x")?.compression).toBe("skeleton")
+
+    // Round-trip through update_node too.
+    await wiki.updateNode("x", { compression: "condensed" })
+    expect((await wiki.getNode("x"))?.compression).toBe("condensed")
   })
 })

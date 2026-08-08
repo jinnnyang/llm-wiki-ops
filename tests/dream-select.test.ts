@@ -198,7 +198,7 @@ describe("thread detection", () => {
     expect(countContradictsEdges(pages)).toBe(1)
   })
 
-  it("carries unresolved threads from the previous journal entry first", () => {
+  it("carries a thread whose subject still exists, and revisits it first", () => {
     const pages = [
       page({ slug: "h", content: "status: hypothesis" }),
       page({ slug: "v", tags: ["needs-verification"] }),
@@ -206,11 +206,49 @@ describe("thread detection", () => {
     const threads = collectOpenThreads(pages, {
       date: "2026-08-01",
       seed: "20260801",
-      threads_carried: ["hypothesis:older"],
+      threads_carried: ["hypothesis:h"],
     })
-    expect(threads.carried).toEqual(["hypothesis:older"])
+    expect(threads.carried).toEqual(["hypothesis:h"])
     expect(threads.hypothesisPages).toEqual(["h"])
     expect(threads.needsVerification).toEqual(["v"])
+  })
+
+  it("prunes carried threads whose subject is gone — no ghosts in the prompt", () => {
+    // Verdicts live in prose and can't be parsed reliably, but a thread's
+    // SUBJECT is observable state: if the hypothesis page no longer says
+    // hypothesis (or is deleted), the thread is settled either way. Without
+    // this the carry list only grows and eventually dominates the prompt.
+    const pages = [page({ slug: "h", content: "now an established finding" })]
+    const threads = collectOpenThreads(pages, {
+      date: "2026-08-01",
+      seed: "20260801",
+      threads_carried: [
+        "hypothesis:h", // page exists but marker is gone → prune
+        "hypothesis:deleted-page", // page gone → prune
+        "needs-verification:v", // tag gone → prune
+        "contradicts:a→b", // edge gone → prune
+      ],
+    })
+    expect(threads.carried).toEqual([])
+  })
+
+  it("keeps a carried thread of unrecognised shape rather than losing a lead", () => {
+    const threads = collectOpenThreads([], {
+      date: "2026-08-01",
+      seed: "20260801",
+      threads_carried: ["some-freeform-note-from-a-future-version"],
+    })
+    expect(threads.carried).toEqual(["some-freeform-note-from-a-future-version"])
+  })
+
+  it("keeps a carried contradicts thread while the edge is still there", () => {
+    const pages = [page({ slug: "a", related: [{ slug: "b", relation: "contradicts" }] })]
+    const threads = collectOpenThreads(pages, {
+      date: "2026-08-01",
+      seed: "20260801",
+      threads_carried: ["contradicts:a→b"],
+    })
+    expect(threads.carried).toEqual(["contradicts:a→b"])
   })
 })
 
@@ -289,6 +327,44 @@ describe("computeSalience", () => {
       computeSalience(input, tuning).map((s) => s.slug),
     )
   })
+
+  it("damps already-compressed nodes so a skeleton isn't re-compressed forever", () => {
+    // Without damping a skeleton node keeps ranking as prime material and gets
+    // picked every dream — the forgetting loop never terminates.
+    const pages = [
+      page({ slug: "active-node" }),
+      page({ slug: "condensed-node", compression: "condensed" }),
+      page({ slug: "skeleton-node", compression: "skeleton" }),
+    ]
+    const s = computeSalience(
+      {
+        pages,
+        graph: graphOf([]),
+        usage: usageOf({}),
+        overdueDays: new Map(),
+        today: "2026-08-07",
+      },
+      tuning,
+    )
+    const score = (slug: string) => s.find((e) => e.slug === slug)!.score
+    expect(score("active-node")).toBeGreaterThan(score("condensed-node"))
+    expect(score("condensed-node")).toBeGreaterThan(score("skeleton-node"))
+  })
+
+  it("surfaces the compression stage so the agent can see it", () => {
+    const s = computeSalience(
+      {
+        pages: [page({ slug: "x", compression: "skeleton" }), page({ slug: "y" })],
+        graph: graphOf([]),
+        usage: usageOf({}),
+        overdueDays: new Map(),
+        today: "2026-08-07",
+      },
+      tuning,
+    )
+    expect(s.find((e) => e.slug === "x")!.compression).toBe("skeleton")
+    expect(s.find((e) => e.slug === "y")!.compression).toBeUndefined()
+  })
 })
 
 // ── Random activation (§5.4) ────────────────────────────────────────
@@ -331,6 +407,21 @@ describe("dream scenes", () => {
     const scenes = buildDreamScenes(salience, adjacency, resolveTuning({ certainty: 0 }), "20260807")
     const hops = scenes.flatMap((s) => s.hops)
     expect(hops.some((h) => h.via === "teleport")).toBe(true)
+  })
+
+  it("labels a forced jump dead-end, not teleport", () => {
+    // The prompt tells the model teleport means "far apart on purpose". A hop
+    // taken only because there was no unvisited neighbour carries no such
+    // meaning and must not be over-interpreted.
+    const isolated = new Map<string, string[]>() // no edges at all
+    const scenes = buildDreamScenes(salience, isolated, resolveTuning({ certainty: 1 }), "20260807")
+    const hops = scenes.flatMap((s) => s.hops)
+    expect(hops.length).toBeGreaterThan(0)
+    // No edges exist, so no hop can be an edge hop.
+    expect(hops.some((h) => h.via === "edge")).toBe(false)
+    // p_edge is 0.9 at certainty=1, so most hops wanted an edge and found none
+    // → dead-end. The remaining ~10% chose to jump → genuine teleport.
+    expect(hops.some((h) => h.via === "dead-end")).toBe(true)
   })
 
   it("high certainty follows real edges when they exist", () => {

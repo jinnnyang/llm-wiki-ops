@@ -22,7 +22,7 @@ import { runAgent, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
 import { createLocalTools, type LocalToolRegistry } from "./tools.js"
 import { resolveLlmConfig, type LlmConfig, type ToolDefinition } from "./openai.js"
-import { scanWiki, buildGraphFromPages } from "../core/graph-builder.js"
+import { scanWiki, buildGraphFromPages, type ScannedPage } from "../core/graph-builder.js"
 import { scanFreshnessFromPages } from "../core/freshness.js"
 import { computeUsageStats, type NodeUsage } from "../core/usage.js"
 import {
@@ -67,7 +67,6 @@ export interface DreamOptions extends Partial<DreamTuning> {
   dryRun?: boolean
   /** --pressure: report the pressure reading and exit without dreaming. */
   pressureOnly?: boolean
-  verbose?: boolean
   llmConfig?: LlmConfig
 }
 
@@ -357,8 +356,47 @@ function todayAndSeed(): { today: string; seed: string } {
 }
 
 /**
- * Gather everything the dream needs, without an LLM: pressure, salience,
- * scenes, and open threads. Exported so --pressure can reuse the cheap half.
+ * The cheap half: pressure only.
+ *
+ * Needs pages + freshness + the journal's last entry, and nothing else — no
+ * usage-log aggregation (a 30-file read), no salience, no walks. This is what
+ * `--pressure` actually runs, so the CLI's "no model call" promise also means
+ * "not much work".
+ */
+export async function preparePressure(options: DreamOptions): Promise<{
+  tuning: DreamTuning
+  pressure: PressureReport
+  pages: ScannedPage[]
+  freshness: ReturnType<typeof scanFreshnessFromPages>
+  lastEntry: Awaited<ReturnType<typeof readLastJournalEntry>>
+  today: string
+  seed: string
+  pageCount: number
+}> {
+  const tuning = resolveTuning(options)
+  const { today, seed } = todayAndSeed()
+  const wikiDir = join(options.wikiRoot, "wiki")
+
+  const pages = await scanWiki(wikiDir, options.wikiRoot)
+  const freshness = scanFreshnessFromPages(pages, { today })
+  const lastEntry = await readLastJournalEntry(options.wikiRoot)
+
+  const pressure = computePressure(
+    {
+      pages,
+      overdueCount: freshness.due.length,
+      lastDreamDate: lastEntry?.date ?? null,
+      today,
+    },
+    tuning,
+  )
+
+  return { tuning, pressure, pages, freshness, lastEntry, today, seed, pageCount: pages.length }
+}
+
+/**
+ * Everything a full dream needs, without an LLM: pressure, salience, scenes,
+ * and open threads. Builds on preparePressure.
  */
 export async function prepareDream(options: DreamOptions): Promise<{
   tuning: DreamTuning
@@ -370,25 +408,10 @@ export async function prepareDream(options: DreamOptions): Promise<{
   today: string
   pageCount: number
 }> {
-  const tuning = resolveTuning(options)
-  const { today, seed } = todayAndSeed()
-  const wikiDir = join(options.wikiRoot, "wiki")
-
-  const pages = await scanWiki(wikiDir, options.wikiRoot)
+  const { tuning, pressure, pages, freshness, lastEntry, today, seed } =
+    await preparePressure(options)
   const graph = buildGraphFromPages(pages)
-  const freshness = scanFreshnessFromPages(pages, { today })
-  const lastEntry = await readLastJournalEntry(options.wikiRoot)
-
   const overdueDays = new Map(freshness.due.map((e) => [e.slug, e.overdueDays]))
-  const pressure = computePressure(
-    {
-      pages,
-      overdueCount: freshness.due.length,
-      lastDreamDate: lastEntry?.date ?? null,
-      today,
-    },
-    tuning,
-  )
 
   // Usage stats drive the salience "attention" component (§5.3).
   const stats = await computeUsageStats(options.wikiRoot, {
@@ -396,6 +419,10 @@ export async function prepareDream(options: DreamOptions): Promise<{
     topN: Number.MAX_SAFE_INTEGER,
     bottomN: 0,
     allSlugs: pages.map((p) => p.slug),
+    // Exclude the dream's own reads. Every node a dream inspects is logged with
+    // actor "dream"; counting those would inflate tomorrow's salience for
+    // exactly the nodes this dream already looked at.
+    excludeActor: "dream",
   })
   const usage = new Map<string, NodeUsage>(stats.top.map((u) => [u.slug, u]))
 
@@ -422,13 +449,15 @@ function renderContext(
   lines.push(`# YOUR DREAM MATERIAL: ${scenes.length} scenes`)
   lines.push("")
   lines.push(
-    `These are seeded random walks through the graph — the nodes that ended up together in this dream. Work through them one by one; they are the reason you are awake. "⇢teleport⇢" means the two nodes are NOT connected in the graph and were put side by side on purpose: that is where a connection nobody wrote down is most likely to hide.`,
+    `These are seeded random walks through the graph — the nodes that ended up together in this dream. Work through them one by one; they are the reason you are awake. "⇢teleport⇢" means the two nodes are NOT connected in the graph and were put side by side on purpose: that is where a connection nobody wrote down is most likely to hide. "·dead-end·" just means the previous node had no unvisited neighbour, so read nothing into that pairing.`,
   )
   lines.push("")
   scenes.forEach((scene, i) => {
     const walk = scene.hops.length
       ? scene.nodes[0] +
-        scene.hops.map((h) => `${h.via === "edge" ? " —edge→ " : " ⇢teleport⇢ "}${h.to}`).join("")
+        scene.hops
+          .map((h) => `${h.via === "edge" ? " —edge→ " : h.via === "teleport" ? " ⇢teleport⇢ " : " ·dead-end· "}${h.to}`)
+          .join("")
       : scene.nodes[0]
     lines.push(`**Scene ${i + 1}:** ${walk}`)
   })
@@ -463,13 +492,17 @@ function renderContext(
   }
 
   lines.push("", `## Salience (top 20 of ${salience.length}; raw components, overrule freely)`)
-  lines.push(`| slug | score | usage30 | inDeg | overdue | days since check |`)
-  lines.push(`|---|---|---|---|---|---|`)
+  lines.push(`| slug | score | usage30 | inDeg | overdue | days since check | compression |`)
+  lines.push(`|---|---|---|---|---|---|---|`)
   for (const s of salience.slice(0, 20)) {
     lines.push(
-      `| ${s.slug} | ${s.score} | ${s.usage30} | ${s.inDegree} | ${s.overdueDays} | ${s.daysSinceChecked ?? "never"} |`,
+      `| ${s.slug} | ${s.score} | ${s.usage30} | ${s.inDegree} | ${s.overdueDays} | ${s.daysSinceChecked ?? "never"} | ${s.compression ?? "active"} |`,
     )
   }
+  lines.push("")
+  lines.push(
+    `The compression column is the node's CURRENT stage — check it before compressing anything. active → condensed → skeleton → delete, at most one step per dream. Only a node already at \`skeleton\` may be deleted. Scores are already damped by stage, so a skeleton node ranking low is expected, not an oversight.`,
+  )
 
   const forgotten = salience.filter((s) => s.usage30 === 0).slice(0, 10)
   if (forgotten.length) {
@@ -513,11 +546,12 @@ function renderContext(
  */
 export async function runDream(options: DreamOptions): Promise<DreamResult> {
   const dreamsDir = resolveDreamsDir(options.wikiRoot, options.dreamsDir)
-  const prep = await prepareDream(options)
 
   if (options.pressureOnly) {
-    // No model is invoked on this path — the reading is pure code.
-    const message = renderPressureOnly(prep.pressure, prep.pageCount)
+    // Cheap path: pressure only, no usage aggregation, no salience, no walks,
+    // no model.
+    const cheap = await preparePressure(options)
+    const message = renderPressureOnly(cheap.pressure, cheap.pageCount)
     return {
       status: "completed",
       iterations: 0,
@@ -532,17 +566,22 @@ export async function runDream(options: DreamOptions): Promise<DreamResult> {
         operations: [],
         changes: [],
       },
-      pressure: prep.pressure,
+      pressure: cheap.pressure,
     }
   }
+
+  const prep = await prepareDream(options)
 
   const llmConfig = options.llmConfig ?? resolveLlmConfig()
   const mcp = new McpClient()
 
-  // Create the dreams directory up front. The local write tool creates parents
-  // on demand too, but doing it here means list_directory works from the first
-  // iteration and the agent never sees a confusing ENOENT on a fresh wiki.
-  await fs.mkdir(join(options.wikiRoot, dreamsDir), { recursive: true })
+  // Create the dreams directory up front so list_directory works from the first
+  // iteration and the agent never hits a confusing ENOENT on a fresh wiki. The
+  // local write tool also creates parents on demand. Skipped for dry-run: a
+  // preview must not leave anything on disk.
+  if (!options.dryRun) {
+    await fs.mkdir(join(options.wikiRoot, dreamsDir), { recursive: true })
+  }
 
   try {
     await mcp.connect({

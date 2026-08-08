@@ -614,11 +614,15 @@ export function deriveChanges(toolLogs: ToolCallLog[]): RunReport["changes"] {
       const newSlug = (log.args["new_slug"] as string) ?? undefined
       const oldSlug = (log.args["old_slug"] as string) ?? undefined
       const target = newSlug ?? oldSlug
-      if (target) changes.push({ file: target, action: "modified" })
+      // Slug, not a path: the type directory isn't in the tool args, so
+      // resolving it would mean guessing. Marked as a slug so the printed
+      // Changes block doesn't read like a half-broken path (add_node above can
+      // derive a real path because it carries title + type).
+      if (target) changes.push({ file: `slug:${target}`, action: "modified" })
     } else if (tool === "update_node") {
-      if (slug) changes.push({ file: slug, action: "modified" })
+      if (slug) changes.push({ file: `slug:${slug}`, action: "modified" })
     } else if (tool === "delete_node") {
-      if (slug) changes.push({ file: slug, action: "deleted" })
+      if (slug) changes.push({ file: `slug:${slug}`, action: "deleted" })
     }
   }
   return changes

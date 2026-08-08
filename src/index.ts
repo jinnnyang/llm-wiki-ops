@@ -70,19 +70,19 @@ import { UsageLogger } from "./core/usage.js"
 const DEFAULT_TRUST_WINDOW_MS = 30_000
 
 /**
- * Normalize a wiki root to one canonical string per physical directory.
+ * Canonical IDENTITY key for a wiki root — for caches and equality only, never
+ * for filesystem access.
  *
- * path.resolve alone is not enough on Windows: "C:\Wiki" and "c:\wiki" are the
- * same directory but different strings, which would produce two A′ scan caches
- * and silently break maybeRebuildAfterWrite (dream.md §4.6). Case folding is
- * applied only on case-insensitive platforms — Linux paths are case-sensitive
- * and must be left alone.
+ * On Windows "C:\Wiki" and "c:\wiki" are the same directory but different
+ * strings, which would produce two A′ scan caches and silently break
+ * maybeRebuildAfterWrite (dream.md §4.6). Case folding is restricted to win32:
+ * macOS can be formatted case-sensitive (APFS), so lowercasing a real path there
+ * would turn a cache-key fix into a file-access bug. The actual wikiRoot keeps
+ * its original casing.
  */
-function normalizeWikiRoot(wikiRoot: string): string {
+export function wikiRootCacheKey(wikiRoot: string): string {
   const resolved = path.resolve(wikiRoot)
-  return process.platform === "win32" || process.platform === "darwin"
-    ? resolved.toLowerCase()
-    : resolved
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved
 }
 
 /** Short error identifier for the usage log — code when available, else message. */
@@ -114,6 +114,8 @@ export class WikiGraph {
   readonly resident: boolean
   readonly trustWindowMs: number
   readonly actor: string
+  /** Canonical identity key (caches/equality only, never for file access). */
+  readonly cacheKey: string
 
   // ── Resident graph state (only when resident=true) ────────────────
   private residentState: ResidentState | null = null
@@ -123,7 +125,10 @@ export class WikiGraph {
   private readonly usage: UsageLogger | null
 
   constructor(wikiRoot: string, options?: WikiGraphOptions) {
-    this.wikiRoot = normalizeWikiRoot(wikiRoot)
+    // Real path, original casing — used for every filesystem operation.
+    this.wikiRoot = path.resolve(wikiRoot)
+    // Identity key for caches/dedup only (see wikiRootCacheKey).
+    this.cacheKey = wikiRootCacheKey(wikiRoot)
     this.wikiDir = path.join(this.wikiRoot, "wiki")
     this.maintainIndex = options?.maintainIndex ?? true
     this.maintainLog = options?.maintainLog ?? true
@@ -252,6 +257,24 @@ export class WikiGraph {
       const state = await this.ensureResident()
       return scanFreshnessFromPages(state.pages, options)
     })
+  }
+
+  /**
+   * Every slug in the wiki, unpaginated.
+   *
+   * readGraph() is the wrong tool for enumeration: it caps results at
+   * READ_GRAPH_MAX_LIMIT (500) and throws ResultTooLargeError past the default
+   * 200, so using it to collect slugs breaks usage_stats on any real wiki. This
+   * goes straight to scanWiki, which is backed by the A′ file cache (~90ms warm)
+   * and has no limit.
+   */
+  async listSlugs(): Promise<string[]> {
+    if (this.resident) {
+      const state = await this.ensureResident()
+      return state.pages.map((p) => p.slug)
+    }
+    const pages = await scanWiki(this.wikiDir, this.wikiRoot)
+    return pages.map((p) => p.slug)
   }
 
   // ── Resident graph internals (design: resident-graph.md §4) ───────

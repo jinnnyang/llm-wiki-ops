@@ -119,6 +119,30 @@ console.log(metrics.sourceOverlap.duplicateClusters)
 await wiki.cleanup()
 ```
 
+### Usage log (on by default)
+
+Every read and write through `WikiGraph` appends one JSONL event to
+`<wikiRoot>/.llm-wiki-ops/usage/YYYY-MM-DD.jsonl`. It powers the "what is
+actually used / what has been forgotten" signal behind `llm-wiki graph usage`,
+the `usage_stats` MCP tool, and the dream agent's node selection.
+
+**`maintainLog` defaults to `true`** — a change in behaviour for library
+consumers, who previously got no log. Pass `false` to opt out (tests and
+read-only tooling usually want this):
+
+```typescript
+const wiki = new WikiGraph("/path/to/wiki", {
+  maintainLog: false,      // no usage log
+  actor: "my-app",         // who is operating, recorded in each event
+})
+
+// Buffered read events are flushed on a timer; flush explicitly before exit.
+await wiki.flushUsageLog()
+```
+
+Day files older than 90 days are pruned automatically, and the directory sits
+outside `wiki/` so it never shows up in the graph.
+
 ## Wiki Structure
 
 Operates on the standard LLM Wiki layout:

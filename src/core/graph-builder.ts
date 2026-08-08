@@ -58,6 +58,8 @@ export interface ScannedPage {
   absPath: string
   wikilinkTargets: string[] // normalized slugs from content
   status?: string
+  /** Compression stage set by the dream agent: active | condensed | skeleton. */
+  compression?: string
   superseded_by?: string
 }
 
@@ -224,6 +226,7 @@ async function parsePageFile(absPath: string, wikiRoot: string): Promise<Scanned
     absPath,
     wikilinkTargets,
     status: (frontmatter?.status as string) ?? undefined,
+    compression: (frontmatter?.compression as string) ?? undefined,
     superseded_by: (frontmatter?.superseded_by as string) ?? undefined,
   }
 }
@@ -346,6 +349,7 @@ export function buildGraphFromPages(pages: ScannedPage[]): Graph {
       checked: p.checked,
       path: p.path,
       status: p.status,
+      compression: p.compression,
       superseded_by: p.superseded_by,
     })),
     edges: [...edgeMap.values()],
@@ -486,6 +490,7 @@ export function pageToWikiPage(page: ScannedPage): WikiPage {
     content: page.content,
     path: page.path,
     status: page.status,
+    compression: page.compression,
     superseded_by: page.superseded_by,
   }
 }

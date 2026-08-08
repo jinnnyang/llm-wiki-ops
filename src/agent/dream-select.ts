@@ -48,6 +48,12 @@ export interface DreamTuning {
   }
   /** Suggest dreaming at or above this score. Default 10. */
   pressureThreshold: number
+  /**
+   * Score multiplier per compression stage. Already-compressed nodes are worth
+   * revisiting less often — without this a skeleton node keeps ranking as prime
+   * material and gets re-compressed every single dream.
+   */
+  compressionDamping: Record<string, number>
 }
 
 /** Defaults in one place, so overriding one field never loses the others. */
@@ -68,6 +74,8 @@ export const DREAM_DEFAULTS: DreamTuning = {
     daysSinceLastDream: 1,
   },
   pressureThreshold: 10,
+  // active/absent = full weight; each compression step halves the pull.
+  compressionDamping: { active: 1, condensed: 0.5, skeleton: 0.25 },
 }
 
 export function resolveTuning(overrides?: Partial<DreamTuning>): DreamTuning {
@@ -76,6 +84,7 @@ export function resolveTuning(overrides?: Partial<DreamTuning>): DreamTuning {
     ...overrides,
     salienceWeights: { ...DREAM_DEFAULTS.salienceWeights, ...overrides?.salienceWeights },
     pressureWeights: { ...DREAM_DEFAULTS.pressureWeights, ...overrides?.pressureWeights },
+    compressionDamping: { ...DREAM_DEFAULTS.compressionDamping, ...overrides?.compressionDamping },
   }
 }
 
@@ -120,7 +129,7 @@ export interface JournalEntry {
    * The scenes actually injected, recorded from the pure-code walk rather than
    * from the model's report — a model may misdescribe its own inputs.
    */
-  scenes?: Array<{ nodes: string[]; hops: Array<{ from: string; to: string; via: "edge" | "teleport" }> }>
+  scenes?: Array<{ nodes: string[]; hops: Array<{ from: string; to: string; via: "edge" | "teleport" | "dead-end" }> }>
   candidates?: Array<{ slug: string; salience: number; usage30: number; inDegree: number; overdueDays: number }>
   /** Threads left unresolved by this dream — next dream revisits them first. */
   threads_carried?: string[]
@@ -276,6 +285,8 @@ export interface SalienceEntry {
   overdueDays: number
   /** Days since the node was last fact-checked; null when never checked. */
   daysSinceChecked: number | null
+  /** Current compression stage; undefined means never compressed (active). */
+  compression?: string
 }
 
 /**
@@ -307,6 +318,7 @@ export function computeSalience(input: SalienceInput, tuning: DreamTuning): Sali
       // so a dream that compresses a node would make it look freshly touched
       // and thus more dream-worthy — a self-feeding loop (§5.3).
       daysSinceChecked: page.checked ? daysBetween(page.checked, today) : null,
+      compression: page.compression,
     }
   })
 
@@ -319,11 +331,15 @@ export function computeSalience(input: SalienceInput, tuning: DreamTuning): Sali
     .map((r) => ({
       ...r,
       score: round2(
-        w.usage30 * (r.usage30 / maxUsage) +
+        (w.usage30 * (r.usage30 / maxUsage) +
           w.inDegree * (r.inDegree / maxInDeg) +
           w.overdue * (r.overdueDays / maxOverdue) +
           // Long-unchecked nodes score higher: nobody has looked at them lately.
-          w.touch * ((r.daysSinceChecked ?? maxChecked) / maxChecked),
+          w.touch * ((r.daysSinceChecked ?? maxChecked) / maxChecked)) *
+          // Damp what has already decayed, so a skeleton node is not re-picked
+          // and re-compressed every dream (the compression stage is now readable
+          // from frontmatter — before, this loop was open).
+          (tuning.compressionDamping[r.compression ?? "active"] ?? 1),
       ),
     }))
     .sort((a, b) => b.score - a.score || a.slug.localeCompare(b.slug))
@@ -334,8 +350,13 @@ export function computeSalience(input: SalienceInput, tuning: DreamTuning): Sali
 export interface DreamScene {
   /** Slugs visited, in walk order. The first is the seed. */
   nodes: string[]
-  /** How each hop was reached — for the report and for debugging the walk. */
-  hops: Array<{ from: string; to: string; via: "edge" | "teleport" }>
+  /**
+   * How each hop was reached. "teleport" means a real jump chosen against p_edge
+   * (the interesting case: far-apart nodes deliberately put together);
+   * "dead-end" means there simply was no unvisited neighbour, which carries no
+   * such meaning and must not be over-interpreted.
+   */
+  hops: Array<{ from: string; to: string; via: "edge" | "teleport" | "dead-end" }>
 }
 
 /**
@@ -410,21 +431,27 @@ export function buildDreamScenes(
     let current = start
     for (let h = 0; h < hopCount; h++) {
       const neighbours = (adjacency.get(current) ?? []).filter((n) => !nodes.includes(n))
-      const takeEdge = neighbours.length > 0 && rng() < pEdge
+      const wantsEdge = rng() < pEdge
+      const takeEdge = neighbours.length > 0 && wantsEdge
 
       let next: string | null
+      let via: "edge" | "teleport" | "dead-end"
       if (takeEdge) {
         next = neighbours[Math.floor(rng() * neighbours.length)]
+        via = "edge"
       } else {
         next = weightedPick(
           pool.filter((p) => !nodes.includes(p.slug)),
           epsilon,
           rng,
         )
+        // Distinguish a chosen jump from a forced one: only the former means
+        // "these two are far apart and I put them together on purpose".
+        via = wantsEdge && neighbours.length === 0 ? "dead-end" : "teleport"
       }
       if (!next) break
 
-      hops.push({ from: current, to: next, via: takeEdge ? "edge" : "teleport" })
+      hops.push({ from: current, to: next, via })
       nodes.push(next)
       current = next
     }
@@ -484,12 +511,49 @@ export function collectOpenThreads(
     }
   }
 
+  const hypothesisPages = pages.filter(isHypothesisPage).map((p) => p.slug)
+  const needsVerification = pages
+    .filter((p) => p.tags.includes("needs-verification"))
+    .map((p) => p.slug)
+
   return {
-    hypothesisPages: pages.filter(isHypothesisPage).map((p) => p.slug),
+    hypothesisPages,
     contradictsEdges,
-    needsVerification: pages.filter((p) => p.tags.includes("needs-verification")).map((p) => p.slug),
-    carried: lastEntry?.threads_carried ?? [],
+    needsVerification,
+    carried: pruneCarriedThreads(lastEntry?.threads_carried ?? [], {
+      hypothesisPages,
+      contradictsEdges,
+      needsVerification,
+    }),
   }
+}
+
+/**
+ * Drop carried threads that no longer exist in the wiki.
+ *
+ * Verdicts are only stated in prose, which is unreliable to parse — but a
+ * thread's *subject* is observable state. A hypothesis whose page is gone or no
+ * longer carries the marker is settled or deleted either way; likewise a
+ * contradicts edge that has been removed. Without this the carry list only ever
+ * grows and eventually dominates the prompt with ghosts.
+ *
+ * Anything whose form isn't recognised is kept: conservative carry still wins
+ * over losing a lead.
+ */
+export function pruneCarriedThreads(
+  carried: string[],
+  live: { hypothesisPages: string[]; contradictsEdges: string[]; needsVerification: string[] },
+): string[] {
+  const hyp = new Set(live.hypothesisPages)
+  const edges = new Set(live.contradictsEdges)
+  const needs = new Set(live.needsVerification)
+
+  return carried.filter((thread) => {
+    if (thread.startsWith("hypothesis:")) return hyp.has(thread.slice("hypothesis:".length))
+    if (thread.startsWith("needs-verification:")) return needs.has(thread.slice("needs-verification:".length))
+    if (thread.startsWith("contradicts:")) return edges.has(thread.slice("contradicts:".length))
+    return true // unknown shape — keep it rather than silently drop a lead
+  })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

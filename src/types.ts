@@ -52,6 +52,7 @@ export interface GraphNode {
   path: string // relative to wikiRoot (e.g. "wiki/entities/ai基建周期.md")
   status?: string // "active" (default) | "invalidated"
   superseded_by?: string // slug of replacement node (when status=invalidated)
+  compression?: string // dream's compression stage: active | condensed | skeleton
 }
 
 export type EdgeOrigin = "wikilink" | "related"
@@ -111,6 +112,8 @@ export interface WikiPage {
   path: string
   status?: string
   superseded_by?: string
+  /** Compression stage (dream.md §6.1): active | condensed | skeleton. */
+  compression?: string
 }
 
 export interface WikiStats {
