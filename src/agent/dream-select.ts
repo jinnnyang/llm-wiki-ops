@@ -145,23 +145,55 @@ export function journalPath(wikiRoot: string): string {
 /**
  * Last journal line — all the state a dream needs (§5.1).
  * Returns null on a wiki that has never dreamt.
+ *
+ * Reads from the tail rather than loading the file: each entry embeds the full
+ * model report plus scenes and candidates, so a year of nightly dreaming is a
+ * multi-megabyte file and slurping all of it to get one line gets worse every
+ * day. The journal itself stays append-only — history is the point — this only
+ * changes how the newest line is found.
  */
 export async function readLastJournalEntry(wikiRoot: string): Promise<JournalEntry | null> {
-  let raw: string
+  const file = journalPath(wikiRoot)
+
+  let handle: fs.FileHandle
   try {
-    raw = await fs.readFile(journalPath(wikiRoot), "utf8")
+    handle = await fs.open(file, "r")
   } catch {
     return null
   }
-  const lines = raw.split("\n").filter((l) => l.trim())
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      return JSON.parse(lines[i]) as JournalEntry
-    } catch {
-      // Torn line from an interrupted append — try the one before it.
+
+  try {
+    const { size } = await handle.stat()
+    if (size === 0) return null
+
+    // Grow the window until a parseable line turns up: entries are usually a few
+    // KB, but a long report can exceed any fixed guess.
+    let window = 64 * 1024
+    while (true) {
+      const length = Math.min(window, size)
+      const buffer = Buffer.alloc(length)
+      await handle.read(buffer, 0, length, size - length)
+
+      const text = buffer.toString("utf8")
+      // A partial first line is possible unless the whole file is in the window.
+      const lines = (length < size ? text.slice(text.indexOf("\n") + 1) : text)
+        .split("\n")
+        .filter((l) => l.trim())
+
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          return JSON.parse(lines[i]) as JournalEntry
+        } catch {
+          // Torn line from an interrupted append — try the one before it.
+        }
+      }
+
+      if (length >= size) return null // whole file scanned, nothing parseable
+      window *= 4
     }
+  } finally {
+    await handle.close()
   }
-  return null
 }
 
 /** Append one line. The journal is append-only: history is the point. */
@@ -202,14 +234,22 @@ export function computePressure(input: PressureInput, tuning: DreamTuning): Pres
   const { pages, overdueCount, lastDreamDate, today } = input
   const w = tuning.pressureWeights
 
+  // The dream's OWN output must not raise its own pressure. Dream pages written
+  // last night carry that night's created date, so counting them means five new
+  // dream pages hand the next run five free points — dream more, score higher,
+  // "should" dream more. Third instance of this loop shape, after usage stats
+  // (excludeActor) and the touch clock (checked, not updated); freshness already
+  // excludes dreams by type, so overdueCount arrives clean.
+  const knowledge = pages.filter((p) => p.type !== "dream")
+
   const isNew = (p: ScannedPage) => !!lastDreamDate && p.created > lastDreamDate
-  const created = lastDreamDate ? pages.filter(isNew).length : pages.length
+  const created = lastDreamDate ? knowledge.filter(isNew).length : knowledge.length
   const updated = lastDreamDate
-    ? pages.filter((p) => p.updated > lastDreamDate && !isNew(p)).length
+    ? knowledge.filter((p) => p.updated > lastDreamDate && !isNew(p)).length
     : 0
 
-  const hypothesis = countHypothesisPages(pages)
-  const contradicts = countContradictsEdges(pages)
+  const hypothesis = countHypothesisPages(knowledge)
+  const contradicts = countContradictsEdges(knowledge)
   const daysSince = lastDreamDate ? daysBetween(lastDreamDate, today) : 0
 
   const components = [
@@ -537,8 +577,10 @@ export function collectOpenThreads(
  * contradicts edge that has been removed. Without this the carry list only ever
  * grows and eventually dominates the prompt with ghosts.
  *
- * Anything whose form isn't recognised is kept: conservative carry still wins
- * over losing a lead.
+ * Unprefixed entries are NOT pruned (a deliberate call, see the keep branch):
+ * the first journal format wrote bare slugs, and those are indistinguishable
+ * from a marker some future version might add. Conservative carry beats losing
+ * a live lead.
  */
 export function pruneCarriedThreads(
   carried: string[],
@@ -552,7 +594,15 @@ export function pruneCarriedThreads(
     if (thread.startsWith("hypothesis:")) return hyp.has(thread.slice("hypothesis:".length))
     if (thread.startsWith("needs-verification:")) return needs.has(thread.slice("needs-verification:".length))
     if (thread.startsWith("contradicts:")) return edges.has(thread.slice("contradicts:".length))
-    return true // unknown shape — keep it rather than silently drop a lead
+
+    // Anything else is kept. That includes legacy bare slugs from the very first
+    // journal format (pre-prefix): they can't be told apart from a marker a
+    // future version might introduce — both are free-form strings — and dropping
+    // a live lead is worse than carrying a stale one. Decided rather than
+    // overlooked: `.llm-wiki-ops/` is gitignored and prefixed entries are what
+    // gets written now, so any bare entries are from a pre-release journal and
+    // will age out on their own.
+    return true
   })
 }
 

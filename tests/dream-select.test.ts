@@ -7,7 +7,7 @@
  * containment rule.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as os from "node:os"
@@ -35,6 +35,7 @@ import {
   journalPath,
 } from "../src/agent/dream-select.js"
 import { resolveDreamsDir, DEFAULT_DREAMS_DIR } from "../src/agent/dream.js"
+import { normalizeCompression } from "../src/types.js"
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
@@ -179,6 +180,50 @@ describe("computePressure", () => {
     const overdue = r.components.find((c) => c.name === "freshness overdue")!
     expect(overdue).toMatchObject({ count: 3, weight: 1, contribution: 3 })
   })
+
+  it("ignores the dream's own pages — output must not raise its own pressure", () => {
+    // Third instance of this loop shape (after usage stats and the touch clock):
+    // dream pages written last night carry that night's created date, so five of
+    // them would hand the next run five free points. Dream more → score higher →
+    // "should" dream more.
+    const pages = [
+      page({ slug: "kb", created: "2026-07-01", updated: "2026-07-01" }),
+      ...[1, 2, 3, 4, 5].map((i) =>
+        page({ slug: `dream-${i}`, type: "dream", created: "2026-08-01", updated: "2026-08-01" }),
+      ),
+    ]
+    const r = computePressure(
+      { pages, overdueCount: 0, lastDreamDate: "2026-07-31", today: "2026-08-02" },
+      tuning,
+    )
+    expect(r.components.find((c) => c.name === "new pages")!.count).toBe(0)
+    expect(r.components.find((c) => c.name === "updated pages")!.count).toBe(0)
+  })
+
+  it("counts only knowledge pages on a first-ever dream", () => {
+    const pages = [
+      page({ slug: "a" }),
+      page({ slug: "b" }),
+      page({ slug: "d", type: "dream" }),
+    ]
+    const r = computePressure(
+      { pages, overdueCount: 0, lastDreamDate: null, today: "2026-08-07" },
+      tuning,
+    )
+    expect(r.components.find((c) => c.name === "new pages")!.count).toBe(2)
+  })
+
+  it("ignores hypothesis markers and contradicts edges inside dream pages", () => {
+    const pages = [
+      page({ slug: "d", type: "dream", content: "status: hypothesis", related: [{ slug: "x", relation: "contradicts" }] }),
+    ]
+    const r = computePressure(
+      { pages, overdueCount: 0, lastDreamDate: "2026-08-01", today: "2026-08-02" },
+      tuning,
+    )
+    expect(r.components.find((c) => c.name === "hypothesis pages")!.count).toBe(0)
+    expect(r.components.find((c) => c.name === "contradicts edges")!.count).toBe(0)
+  })
 })
 
 // ── Open-thread detection (§5.5) ────────────────────────────────────
@@ -239,6 +284,19 @@ describe("thread detection", () => {
       threads_carried: ["some-freeform-note-from-a-future-version"],
     })
     expect(threads.carried).toEqual(["some-freeform-note-from-a-future-version"])
+  })
+
+  it("keeps unprefixed legacy entries — cannot be told from a future marker", () => {
+    // Documented decision, not an oversight: the first journal format wrote bare
+    // slugs, and a bare slug is shape-identical to a free-form marker a later
+    // version might introduce. Pruning by shape would risk dropping live leads,
+    // so both are carried; pre-release journals age out on their own.
+    const threads = collectOpenThreads([], {
+      date: "2026-08-01",
+      seed: "20260801",
+      threads_carried: ["legacy-bare-slug", "some-future-marker"],
+    })
+    expect(threads.carried).toEqual(["legacy-bare-slug", "some-future-marker"])
   })
 
   it("keeps a carried contradicts thread while the edge is still there", () => {
@@ -500,6 +558,35 @@ describe("journal", () => {
     expect(journalPath(root)).toContain(".llm-wiki-ops")
     expect(journalPath(root)).not.toContain(`${path.sep}wiki${path.sep}`)
   })
+
+  it("finds the last entry without reading the whole file", async () => {
+    // Each entry embeds the full model report, so a year of nightly dreams is a
+    // multi-megabyte file. Reading all of it to get one line gets worse daily.
+    for (let i = 0; i < 40; i++) {
+      await appendJournalEntry(root, {
+        date: `2026-06-${String((i % 28) + 1).padStart(2, "0")}`,
+        seed: `seed-${i}`,
+        report: "R".repeat(20_000), // fat entries, like a real report
+      })
+    }
+    await appendJournalEntry(root, { date: "2026-08-07", seed: "final", threads_carried: ["x"] })
+
+    const size = (await fs.stat(journalPath(root))).size
+    expect(size).toBeGreaterThan(800_000) // well past any single read window
+
+    const last = await readLastJournalEntry(root)
+    expect(last).toMatchObject({ date: "2026-08-07", seed: "final", threads_carried: ["x"] })
+  })
+
+  it("finds the last good entry when the tail is torn, even in a large file", async () => {
+    for (let i = 0; i < 30; i++) {
+      await appendJournalEntry(root, { date: "2026-06-01", seed: `s${i}`, report: "R".repeat(20_000) })
+    }
+    await appendJournalEntry(root, { date: "2026-08-07", seed: "good" })
+    await fs.appendFile(journalPath(root), '{"date":"2026-08-08","seed":"tor', "utf8")
+
+    expect(await readLastJournalEntry(root)).toMatchObject({ seed: "good" })
+  })
 })
 
 // ── dreamsDir containment (§8.1) ────────────────────────────────────
@@ -524,6 +611,35 @@ describe("resolveDreamsDir", () => {
 })
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+describe("normalizeCompression", () => {
+  it("accepts the three real stages", () => {
+    expect(normalizeCompression("active")).toBe("active")
+    expect(normalizeCompression("condensed")).toBe("condensed")
+    expect(normalizeCompression("skeleton")).toBe("skeleton")
+  })
+
+  it("trims and case-folds, so a typo doesn't escape damping", () => {
+    // The damping table is keyed by exact stage, so "SKELETON " used to fall back
+    // to full weight — letting a node dodge decay and get re-compressed forever.
+    expect(normalizeCompression(" Skeleton ")).toBe("skeleton")
+    expect(normalizeCompression("CONDENSED")).toBe("condensed")
+  })
+
+  it("treats an unknown value as active rather than storing it verbatim", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    expect(normalizeCompression("SKELETON!!")).toBeUndefined()
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
+
+  it("ignores empty and non-string input", () => {
+    expect(normalizeCompression("")).toBeUndefined()
+    expect(normalizeCompression("   ")).toBeUndefined()
+    expect(normalizeCompression(undefined)).toBeUndefined()
+    expect(normalizeCompression(42)).toBeUndefined()
+  })
+})
 
 describe("daysBetween", () => {
   it("counts whole days and clamps negatives to zero", () => {

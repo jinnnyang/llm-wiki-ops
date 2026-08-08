@@ -55,6 +55,12 @@ export interface RunReport {
   startedAt: string
   durationMs: number
   operations: { tool: string; args: Record<string, unknown>; status: "ok" | "error" }[]
+  /**
+   * Touched targets. `file` is a wiki-relative PATH when one can be derived
+   * (write_file/edit_file, and add_node via title + type directory), otherwise a
+   * `slug:<slug>` marker for node ops whose args carry no type directory. Check
+   * the prefix before treating it as a path.
+   */
   changes: { file: string; action: "created" | "modified" | "deleted" }[]
   snapshotPath?: string
   dryRun?: boolean

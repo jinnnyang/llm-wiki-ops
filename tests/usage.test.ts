@@ -19,6 +19,7 @@ import {
   clearUsageCache,
   usageDir,
   usageFileFor,
+  sliceForAtomicAppend,
   USAGE_RETENTION_DAYS,
 } from "../src/core/usage.js"
 import type { UsageEvent } from "../src/types.js"
@@ -153,6 +154,33 @@ describe("UsageLogger", () => {
     expect(new Set(slugs).size).toBe(30)
   })
 
+  it("clears the in-flight marker once settled, so the chain can be collected", async () => {
+    // Regression: the marker held `chained.finally(...)`'s RETURN value while the
+    // callback compared against `chained` itself — never equal, so the marker was
+    // never cleared and the promise chain grew for the life of the process. The
+    // comment claimed "only the newest link clears the marker"; it never ran.
+    const logger = new UsageLogger(root, "lib")
+    logger.record({ op: "get_node", slug: "a", ok: true })
+    await logger.flush()
+    expect((logger as unknown as { flushing: Promise<void> | null }).flushing).toBeNull()
+
+    // Still null after a chained pair.
+    logger.record({ op: "get_node", slug: "b", ok: true })
+    const first = logger.flush()
+    logger.record({ op: "get_node", slug: "c", ok: true })
+    await Promise.all([first, logger.flush()])
+    expect((logger as unknown as { flushing: Promise<void> | null }).flushing).toBeNull()
+  })
+
+  it("truncates a huge err so one event can never exceed an append slice", async () => {
+    const logger = new UsageLogger(root, "lib")
+    logger.record({ op: "update_node", slug: "x", ok: false, err: "E".repeat(9000) })
+    await logger.flush()
+
+    const event = (await readToday())[0]
+    expect(event.err!.length).toBeLessThanOrEqual(200)
+  })
+
   it("never throws when the log directory cannot be written", async () => {
     // Point the root at a file, so mkdir of <file>/.llm-wiki-ops fails.
     const filePath = path.join(root, "not-a-dir")
@@ -177,6 +205,50 @@ describe("UsageLogger", () => {
     const remaining = await fs.readdir(usageDir(root))
     expect(remaining).not.toContain(`${stale}.jsonl`)
     expect(remaining).toContain(`${recent}.jsonl`)
+  })
+})
+
+describe("sliceForAtomicAppend", () => {
+  const line = (i: number) =>
+    JSON.stringify({ ts: "2026-08-08T00:00:00.000Z", op: "get_node", slug: `n${i}`, actor: "lib", ok: true })
+
+  it("passes a small batch through untouched", () => {
+    const batch = line(1) + "\n"
+    expect(sliceForAtomicAppend(batch)).toEqual([batch])
+  })
+
+  it("caps every slice at the atomic-append size", () => {
+    // FLUSH_BYTES is only a trigger, not a ceiling: the last event can push a
+    // batch past it, and an explicit flush() writes whatever is buffered. Without
+    // slicing, a concurrent process could interleave mid-line and the torn line
+    // would be silently skipped on read — silent data loss.
+    const batch = Array.from({ length: 2000 }, (_, i) => line(i)).join("\n") + "\n"
+    expect(Buffer.byteLength(batch)).toBeGreaterThan(4096)
+
+    const slices = sliceForAtomicAppend(batch)
+    expect(slices.length).toBeGreaterThan(1)
+    for (const slice of slices) {
+      expect(Buffer.byteLength(slice)).toBeLessThanOrEqual(4096)
+    }
+  })
+
+  it("loses nothing and always cuts on a line boundary", () => {
+    const batch = Array.from({ length: 500 }, (_, i) => line(i)).join("\n") + "\n"
+    const slices = sliceForAtomicAppend(batch)
+
+    expect(slices.join("")).toBe(batch) // byte-for-byte
+    for (const slice of slices) {
+      expect(slice.endsWith("\n")).toBe(true)
+      for (const l of slice.split("\n").filter(Boolean)) {
+        expect(() => JSON.parse(l)).not.toThrow() // no half lines
+      }
+    }
+  })
+
+  it("emits an oversized single line alone rather than cutting it", () => {
+    const huge = JSON.stringify({ op: "x", pad: "P".repeat(9000) })
+    const slices = sliceForAtomicAppend(`${huge}\n${line(1)}\n`)
+    expect(slices[0]).toBe(`${huge}\n`) // intact, not split mid-line
   })
 })
 

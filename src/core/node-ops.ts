@@ -38,6 +38,7 @@ import {
   type RelatedEntry,
   TYPE_DIR_MAP,
   INFRA_FILES,
+  normalizeCompression,
 } from "../types.js"
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -324,9 +325,12 @@ export async function updateNode(
 
   // Compression stage: dream's private bookkeeping, kept out of status so the
   // existing status consumers stay untouched (design: dream.md §6.1).
-  if (patch.compression !== undefined && patch.compression !== fm.compression) {
-    fm.compression = patch.compression
-    result.fieldsChanged.push("compression")
+  if (patch.compression !== undefined) {
+    const normalized = normalizeCompression(patch.compression)
+    if (normalized !== fm.compression) {
+      fm.compression = normalized
+      result.fieldsChanged.push("compression")
+    }
   }
 
   if (patch.superseded_by !== undefined && patch.superseded_by !== fm.superseded_by) {

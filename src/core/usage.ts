@@ -15,8 +15,9 @@
  *     await, never take the wiki lock (that would serialize ms-level reads).
  *   - Writes await the flush: they are already serialized by proper-lockfile,
  *     so one more append is noise-level cost.
- *   - Concurrent appends from multiple processes need no lock: each flush is a
- *     single write call with O_APPEND, atomic for batches under 4KB.
+ *   - Concurrent appends from multiple processes need no lock: every write is
+ *     O_APPEND and append() slices batches to stay under MAX_APPEND_BYTES, so a
+ *     write is never interleaved mid-line by another process.
  */
 
 import * as path from "node:path"
@@ -26,8 +27,22 @@ import type { UsageActor, UsageEvent } from "../types.js"
 /** Days of history kept; older day-files are pruned on first append of a new day. */
 export const USAGE_RETENTION_DAYS = 90
 
-/** Flush threshold — a batch stays well under the 4KB atomic-append limit. */
+/** Buffer size that triggers an automatic flush. */
 const FLUSH_BYTES = 3072
+
+/**
+ * Hard cap per write() call.
+ *
+ * The multi-process safety argument (§4.4) rests on each append being a single
+ * write small enough that the kernel won't interleave it with another process's
+ * append. FLUSH_BYTES alone does not guarantee that — it only decides *when* to
+ * flush, so the final event can push a batch past it, and an explicit flush()
+ * writes whatever is buffered. append() therefore slices batches to this size.
+ */
+const MAX_APPEND_BYTES = 4096
+
+/** Cap on a single event's error text, so one event can never exceed a slice. */
+const MAX_ERR_CHARS = 200
 
 /** Max time a buffered read event waits before hitting the disk. */
 const FLUSH_INTERVAL_MS = 1000
@@ -80,7 +95,10 @@ export class UsageLogger {
         actor: this.actor,
         ...(event.dry ? { dry: true as const } : {}),
         ok: event.ok,
-        ...(event.err ? { err: event.err } : {}),
+        // Truncated here, not only in the facade's errCode(): a direct record()
+        // call would otherwise be able to emit one event larger than the atomic
+        // append slice.
+        ...(event.err ? { err: event.err.slice(0, MAX_ERR_CHARS) } : {}),
       }) + "\n"
 
     this.buffer.push(line)
@@ -123,14 +141,20 @@ export class UsageLogger {
     this.bufferedBytes = 0
 
     const previous = this.flushing ?? Promise.resolve()
-    const chained = previous.then(() => this.append(batch))
-    this.flushing = chained.finally(() => {
-      // Only the newest link clears the marker, so a later flush still chains
-      // onto an in-flight one instead of racing it.
-      if (this.flushing === chained) this.flushing = null
-    })
+    // The marker must hold the SAME promise the callback compares against, or
+    // the comparison is trivially false and the marker is never cleared —
+    // leaving a chain that grows for the life of the process. Declared first,
+    // then assigned, so `settled` refers to itself inside the callback.
+    const settled: Promise<void> = previous
+      .then(() => this.append(batch))
+      .finally(() => {
+        // Only the newest link clears the marker, so a later flush still chains
+        // onto an in-flight one instead of racing it.
+        if (this.flushing === settled) this.flushing = null
+      })
+    this.flushing = settled
 
-    return this.flushing
+    return settled
   }
 
   /** Append one batch; failures are counted, never thrown (telemetry, not truth). */
@@ -138,7 +162,9 @@ export class UsageLogger {
     const file = usageFileFor(this.wikiRoot)
     try {
       await fs.mkdir(path.dirname(file), { recursive: true })
-      await fs.appendFile(file, batch, "utf8")
+      for (const slice of sliceForAtomicAppend(batch)) {
+        await fs.appendFile(file, slice, "utf8")
+      }
       await this.maybePrune(path.basename(file, ".jsonl"))
     } catch {
       this.errorCount++
@@ -352,3 +378,33 @@ export async function computeUsageStats(
     filesRead,
   }
 }
+/**
+ * Split a batch into chunks of at most MAX_APPEND_BYTES, always on line
+ * boundaries, so no single append can be interleaved mid-line by a concurrent
+ * process. A line longer than the cap is emitted alone rather than split — it
+ * would risk tearing either way, and cutting it would guarantee corruption.
+ */
+export function sliceForAtomicAppend(batch: string): string[] {
+  if (Buffer.byteLength(batch) <= MAX_APPEND_BYTES) return [batch]
+
+  const slices: string[] = []
+  let current = ""
+  let currentBytes = 0
+
+  for (const line of batch.split("\n")) {
+    if (line === "") continue
+    const withNewline = line + "\n"
+    const bytes = Buffer.byteLength(withNewline)
+
+    if (currentBytes > 0 && currentBytes + bytes > MAX_APPEND_BYTES) {
+      slices.push(current)
+      current = ""
+      currentBytes = 0
+    }
+    current += withNewline
+    currentBytes += bytes
+  }
+  if (current) slices.push(current)
+  return slices
+}
+

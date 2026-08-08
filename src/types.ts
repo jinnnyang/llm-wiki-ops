@@ -354,3 +354,29 @@ export const KNOWN_TYPE_ORDER: KnownPageType[] = [
   "dream",
   "overview",
 ]
+/** The compression ladder (dream.md §6.1). */
+export const COMPRESSION_STAGES = ["active", "condensed", "skeleton"] as const
+export type CompressionStage = (typeof COMPRESSION_STAGES)[number]
+
+/**
+ * Clean up a compression value on the way in or out.
+ *
+ * Input hygiene, not a constraint on the agent: a stray "SKELETON!!" or
+ * "skeleton " used to be stored verbatim, and since the salience damping table
+ * is keyed by exact stage it fell back to full weight — so a typo let a node
+ * escape decay and get re-compressed every dream. Trim and case-fold, keep it if
+ * it is a real stage, otherwise warn once and treat it as active (undefined).
+ */
+export function normalizeCompression(value: unknown): CompressionStage | undefined {
+  if (typeof value !== "string") return undefined
+  const cleaned = value.trim().toLowerCase()
+  if (cleaned === "") return undefined
+  if ((COMPRESSION_STAGES as readonly string[]).includes(cleaned)) {
+    return cleaned as CompressionStage
+  }
+  console.warn(
+    `[llm-wiki-ops] unknown compression stage ${JSON.stringify(value)} — treating as "active". Valid: ${COMPRESSION_STAGES.join(" | ")}`,
+  )
+  return undefined
+}
+

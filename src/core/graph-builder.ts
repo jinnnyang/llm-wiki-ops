@@ -30,6 +30,7 @@ import {
   INFRA_FILES,
   DIR_TYPE_MAP,
   KNOWN_TYPE_ORDER,
+  normalizeCompression,
 } from "../types.js"
 import { relatedEntrySlug, normalizeRelatedEntry } from "./helpers.js"
 import { ResultTooLargeError, WikiGraphError } from "../utils/errors.js"
@@ -226,7 +227,9 @@ async function parsePageFile(absPath: string, wikiRoot: string): Promise<Scanned
     absPath,
     wikilinkTargets,
     status: (frontmatter?.status as string) ?? undefined,
-    compression: (frontmatter?.compression as string) ?? undefined,
+    // Normalized on read too: frontmatter can be hand-edited, and an unknown
+    // stage must not silently score as active-with-full-weight.
+    compression: normalizeCompression(frontmatter?.compression),
     superseded_by: (frontmatter?.superseded_by as string) ?? undefined,
   }
 }
