@@ -14,6 +14,7 @@
 import { runAgent, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
 import { createLocalTools, type LocalToolRegistry } from "./tools.js"
+import { DREAM_CITATION_DISCIPLINE } from "./dream-citation.js"
 import { resolveLlmConfig, type LlmConfig, type ToolDefinition } from "./openai.js"
 import { join } from "node:path"
 
@@ -135,7 +136,7 @@ const REASON_WRITE_TOOLS: ToolDefinition[] = [
   },
 ]
 
-const REASON_SYSTEM_PROMPT = `You are a wiki reasoning agent. Your job is to reason over the knowledge graph using four disciplined reasoning forms — deduction, induction, analogy, abduction — rather than free-form speculation.
+export const REASON_SYSTEM_PROMPT = `You are a wiki reasoning agent. Your job is to reason over the knowledge graph using four disciplined reasoning forms — deduction, induction, analogy, abduction — rather than free-form speculation.
 
 ## The four reasoning forms (a loop, not four parallel tools)
 
@@ -226,6 +227,8 @@ Write the structured reasoning report as your FINAL message — the report is th
 - **Patterns**: trends, chains, or trajectories discovered (deduction chains with premises listed)
 - **Anomalies**: structural issues + abduction candidates (each with a testable prediction)
 - **Temporal notes**: as_of-based evolution vs contradiction calls
+
+${DREAM_CITATION_DISCIPLINE}
 
 ### Apply Mode
 Execute the changes after your analysis, then write the full structured report (the sections above, plus a Changes Written summary) as your FINAL message — the report is the deliverable the user reads, so it must be the last thing you output.`

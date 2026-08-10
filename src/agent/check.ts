@@ -16,6 +16,7 @@
 import { runAgent, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
 import { createLocalTools, type LocalToolRegistry } from "./tools.js"
+import { DREAM_CITATION_DISCIPLINE } from "./dream-citation.js"
 import { resolveLlmConfig, type LlmConfig, type ToolDefinition } from "./openai.js"
 import { join } from "node:path"
 
@@ -147,7 +148,7 @@ const CHECK_TOOLS: ToolDefinition[] = [
   },
 ]
 
-const CHECK_SYSTEM_PROMPT = `You are a wiki verification agent. Your job is to verify the factual accuracy of wiki content.
+export const CHECK_SYSTEM_PROMPT = `You are a wiki verification agent. Your job is to verify the factual accuracy of wiki content.
 
 ## Mission
 Given a verification scope (query), read the relevant subgraph and verify each node's content.
@@ -173,6 +174,8 @@ For each node, classify as:
 - Prefer marking invalidated over deleting — invalidated nodes preserve history.
 - For uncertain nodes, add the tag "needs-verification" rather than invalidating.
 - The wiki may have 1000+ nodes. Use read_graph with filters to navigate.
+
+${DREAM_CITATION_DISCIPLINE}
 
 ## Output
 End with a verification report table: slug | title | verdict | reason.`

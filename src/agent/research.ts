@@ -10,6 +10,7 @@
 import { runAgent, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
 import { createLocalTools, type LocalToolRegistry } from "./tools.js"
+import { DREAM_CITATION_DISCIPLINE } from "./dream-citation.js"
 import { resolveLlmConfig, type LlmConfig, type ToolDefinition } from "./openai.js"
 import { join } from "node:path"
 
@@ -159,7 +160,7 @@ const RESEARCH_TOOLS: ToolDefinition[] = [
   },
 ]
 
-const RESEARCH_SYSTEM_PROMPT = `You are a wiki research agent. Your job is to enrich and update the wiki with new information.
+export const RESEARCH_SYSTEM_PROMPT = `You are a wiki research agent. Your job is to enrich and update the wiki with new information.
 
 ## Mission
 Given a research query, explore the existing wiki subgraph, identify gaps or stale information, and update/create nodes to fill them.
@@ -177,6 +178,8 @@ Given a research query, explore the existing wiki subgraph, identify gaps or sta
 - Prefer updating existing nodes over creating new ones when the topic overlaps.
 - If web_search is available, use it to find current information, verify facts, or fill knowledge gaps. Always cite the source URL.
 - If web_search is NOT available, do not fabricate external sources — skip external corroboration, judge on wiki evidence alone, and note in the summary that external verification was unavailable.
+
+${DREAM_CITATION_DISCIPLINE}
 
 ## Output
 End with a summary: what you updated, what you created, what gaps remain.`
