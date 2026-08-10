@@ -655,6 +655,13 @@ function printAgentResult(result: import("../agent/loop.js").AgentResult, opts: 
       for (const tc of result.toolCalls) {
         const status = tc.error ? "❌" : "✓"
         console.error(`  ${status} [iter ${tc.iteration}] ${tc.tool} (${tc.durationMs}ms)`)
+        // Print the reason, not just the mark. A run once tripped the circuit
+        // breaker on three failed write_file calls and the log showed only "❌" —
+        // the local write tools do not go through the usage log either, so the
+        // failure was undiagnosable from any artifact the run left behind.
+        if (tc.error) {
+          console.error(`      ↳ ${String(tc.error).split("\n")[0]!.slice(0, 300)}`)
+        }
       }
     }
     console.log(`\nStatus: ${result.status} (${result.iterations} iterations)`)

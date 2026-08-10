@@ -320,6 +320,41 @@ const forgotten = salience.filter((s) => s.usage30 === 0).slice(0, 10)
 
 **修复后实跑**：`战争钨-tungsten-as-strategic-mineral`（零访问、入度 0、concept）active → condensed，1319 → 935 字符（70%），7 条 `related` 边与 7 个 wikilink 全保留，核心数字（53% 储量 / 79% 产量 / 85% APT / 涨 5 倍 / 2 年与 5 年重建期）无丢失。
 
+### 6.7 遗忘需要自己的分数，不能复用 salience 尾部（实测后补）
+
+§6.6 修好排序方向后，遗忘依然走不动：连续多轮 dream 只在 active→condensed 之间打转，或干脆不动。根因不是模型保守，是**分数用错了**。
+
+`overdueDays` 在 salience 里是**正权重**——salience 回答"谁值得注意"，久未核实的节点该去重访。而遗忘候选直接取 salience 排序的**尾部**。真 wiki 实测：
+
+| 节点 | 状态 | salience |
+|---|---|---|
+| `英特尔-intel` | 零访问、零入边、**逾期 393 天** | **0.400** |
+| 任意普通节点 | 逾期 12 天、2 条入边 | 0.210 |
+
+**最该被忘掉的东西分数最高，排得离遗忘列表最远。** 另有 567 个节点并列 0.21，"排序"退化成字母序。
+
+**修法**：新增 `computeForgettability`，独立评分，几乎每项符号都与 salience 相反：
+
+| 因子 | salience | forgettability |
+|---|---|---|
+| 未被读 | 负（不值得注意） | **正**（核心信号） |
+| 入边多 | 正（枢纽重要） | **负**（承重，不能动） |
+| 出边 | 不计 | **明确忽略**——指向 `中国` 不代表自己重要 |
+| 逾期久 | 正（该去重访） | **正**（无人维护） |
+| 已压缩 | 阻尼降分 | **加分**——阶梯该继续 |
+
+并列时按 slug 排序，避免退化成插入序。权重经 `DreamTuning.forgetWeights` 可调（默认 unread .35 / unneeded .3 / stale .2 / stage .15）。
+
+**实测：完整阶梯走通**（1150 页真 wiki，先用 `scripts/seed-usage-log.py` 造访问分布 + `scripts/age-wiki-nodes.py` 把 12 个节点做旧 400 天并剪断入边）：
+
+- 修复后做旧的 12 个节点全部占据榜首（forget≈0.85），普通节点 0.656，分层清晰。
+- 四轮 dream 共 10 个节点 active→condensed，体积真实下降（英特尔 1765→1112b、王传福 2791→1767b）。模型给的理由准确引用 `in=0`、`393 days overdue`。
+- 第五轮 `芯片法案-chips-act` **condensed→skeleton**：1381b → 1171b → **899b**，一行摘要 + 5 条边全保留，89 亿美元换 10% 股份这个事实没丢。
+
+**尚未实测**：`skeleton → delete_node`。机制齐备（prompt 规定只删已是 skeleton 的节点），但需要节点在 skeleton 状态再被判一次无价值，实测未触发。
+
+**可观测性缺陷（顺带修）**：某轮三次 `write_file` 失败触发熔断，verbose 日志**只打 ❌ 不打原因**，而本地写工具不走 usage log——故障在任何产物里都查不到。现在 `--verbose` 输出错误首行。那次失败本身是 14 秒超时，偶发，重跑即过。
+
 ## 7. dream 产物（幻觉 / 灵感）
 
 **用户洞察**：dream 新增的大多数内容是幻觉、是昙花一现的灵感，只有经仔细核验后才能成为突破性创新 → 必须带 UNVERIFIED 状态与警告，留给清醒智能体核验。

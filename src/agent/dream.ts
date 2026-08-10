@@ -29,6 +29,7 @@ import {
   resolveTuning,
   computePressure,
   computeSalience,
+  computeForgettability,
   buildDreamScenes,
   buildWalkAdjacency,
   collectOpenThreads,
@@ -606,33 +607,42 @@ function renderContext(
   // them just crowds out the pages that could actually decay. hub pages stay in —
   // "high in-degree" is a judgement call the model should make, and the numbers
   // are right there in the table.
-  // source/overview are permanently exempt (§6.5) and dream pages do not walk the
-  // ladder at all (§6.1) — they are settled or deleted outright. All three would
-  // otherwise crowd out the nodes that CAN decay: dream pages have in=0 and many
-  // out-edges, so they sink to the very bottom of the ranking and a live run found
-  // 8 of the 10 visible slots taken by them, leaving zero actionable candidates.
-  // The model correctly reported "nothing to compress" — of a list that could not
-  // contain anything to compress.
-  const forgettable = salience.filter(
-    (s) => s.usage30 === 0 && s.type !== "source" && s.type !== "overview" && s.type !== "dream",
-  )
-  const forgotten = forgettable.slice(-10).reverse()
+  // Decay candidates are ranked by their OWN score, not by the bottom of salience.
+  //
+  // Reusing salience's tail looked reasonable and was wrong: `overdue` is a
+  // positive term there, so a node 393 days stale with no reads and no inbound
+  // edges scored 0.400 while an ordinary 12-day-old node scored 0.210 — the most
+  // forgettable material sorted furthest from this list, and 567 nodes tied at
+  // 0.21 turned the order alphabetical. computeForgettability asks the actual
+  // question instead (§6.6).
+  //
+  // source/overview are permanently exempt (§6.5); dream pages never walk the
+  // ladder (§6.1) and, with in=0 and many out-edges, used to occupy 8 of the 10
+  // visible slots — leaving nothing actionable in a list the model was asked to
+  // act on.
+  const forgettable = computeForgettability(
+    salience.filter(
+      (s) => s.type !== "source" && s.type !== "overview" && s.type !== "dream",
+    ),
+    tuning,
+  ).filter((s) => s.usage30 === 0)
+  const forgotten = forgettable.slice(0, 10)
   if (forgotten.length) {
     lines.push(
       "",
-      `## Never read in the last 30 days — lowest salience first (${forgotten.length} of ${forgettable.length})`,
+      `## Forgetting candidates — most forgettable first (${forgotten.length} of ${forgettable.length} unread)`,
     )
     lines.push(
-      `These are the decay candidates: nobody has read them and they score at the bottom. Source, overview and dream pages are already excluded — they never walk the ladder.`,
+      `Ranked by unread + unneeded + stale + already-compressed. Source, overview and dream pages are excluded: they never walk the ladder.`,
     )
     lines.push(
-      `**in** is what depends on THIS node — that is the load-bearing number. **out** is what this node points at, which says nothing about whether anything needs it: a node citing 中国 and 美国 is not thereby important. A node with in=0 or whose only inbound link is from a dream page is a safe compression target no matter how many hubs it references.`,
+      `**in** is what depends on THIS node — the load-bearing number. **out** is what it points at, which says nothing about whether anything needs it: a node citing 中国 and 美国 is not thereby important. in=0 plus a long overdue means nothing references it and nobody has maintained it.`,
     )
-    lines.push(`| slug | score | in | out | overdue | compression |`)
+    lines.push(`| slug | forget | in | out | overdue | stage |`)
     lines.push(`|---|---|---|---|---|---|`)
     for (const s of forgotten) {
       lines.push(
-        `| ${s.slug} | ${s.score} | ${s.inDegree} | ${s.outDegree} | ${s.overdueDays} | ${s.compression ?? "active"} |`,
+        `| ${s.slug} | ${s.forgetScore} | ${s.inDegree} | ${s.outDegree} | ${s.overdueDays}d | ${s.compression ?? "active"} |`,
       )
     }
   }

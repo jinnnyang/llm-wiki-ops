@@ -25,6 +25,7 @@ import {
   conclusionTemperatureFor,
   computePressure,
   computeSalience,
+  computeForgettability,
   buildDreamScenes,
   buildWalkAdjacency,
   collectOpenThreads,
@@ -668,14 +669,102 @@ describe("resolveDreamsDir", () => {
   })
 })
 
+describe("computeForgettability", () => {
+  const mk = (over: Partial<SalienceEntry>): SalienceEntry =>
+    ({
+      slug: "x", title: "x", type: "concept", score: 0.2,
+      usage30: 0, inDegree: 0, outDegree: 0, overdueDays: 0,
+      ...over,
+    }) as SalienceEntry
+
+  it("ranks a stale orphan above a fresh well-linked node", () => {
+    // The bug this replaces: `overdue` is a POSITIVE term in salience (long
+    // unverified ⇒ go re-check it), so on a live wiki a node 393 days overdue
+    // with zero reads and zero inbound edges scored 0.400 while an ordinary
+    // 12-day-old node with 2 inbound edges scored 0.210. Taking salience's tail
+    // therefore sorted the most forgettable material furthest from the list.
+    const rows = computeForgettability(
+      [
+        mk({ slug: "stale-orphan", overdueDays: 393, inDegree: 0 }),
+        mk({ slug: "fresh-linked", overdueDays: 12, inDegree: 4 }),
+      ],
+      resolveTuning({}),
+    )
+    expect(rows[0]!.slug).toBe("stale-orphan")
+    expect(rows[0]!.forgetScore).toBeGreaterThan(rows[1]!.forgetScore)
+  })
+
+  it("counts in-degree AGAINST forgetting", () => {
+    const [low, high] = computeForgettability(
+      [mk({ slug: "needed", inDegree: 20 }), mk({ slug: "orphan", inDegree: 0 })],
+      resolveTuning({}),
+    )
+    expect(low!.slug).toBe("orphan")
+    expect(high!.slug).toBe("needed")
+  })
+
+  it("ignores out-degree entirely", () => {
+    // Pointing at 中国 and 美国 says nothing about whether anything needs you —
+    // a live dream refused a compression on exactly this bad inference.
+    const rows = computeForgettability(
+      [mk({ slug: "a", outDegree: 0 }), mk({ slug: "b", outDegree: 50 })],
+      resolveTuning({}),
+    )
+    expect(rows[0]!.forgetScore).toBe(rows[1]!.forgetScore)
+  })
+
+  it("puts a read node below an unread one", () => {
+    const rows = computeForgettability(
+      [mk({ slug: "read", usage30: 40 }), mk({ slug: "unread", usage30: 0 })],
+      resolveTuning({}),
+    )
+    expect(rows[0]!.slug).toBe("unread")
+  })
+
+  it("nudges already-compressed nodes up, so the ladder can continue", () => {
+    const rows = computeForgettability(
+      [
+        mk({ slug: "fresh", compression: "active" }),
+        mk({ slug: "half", compression: "condensed" }),
+        mk({ slug: "bones", compression: "skeleton" }),
+      ],
+      resolveTuning({}),
+    )
+    expect(rows.map((r) => r.slug)).toEqual(["bones", "half", "fresh"])
+  })
+
+  it("breaks ties deterministically instead of by insertion order", () => {
+    // 567 nodes tied at one score once made the ordering effectively arbitrary.
+    const rows = computeForgettability([mk({ slug: "b" }), mk({ slug: "a" })], resolveTuning({}))
+    expect(rows.map((r) => r.slug)).toEqual(["a", "b"])
+  })
+
+  it("lets a caller reweight it (library inheritance point)", () => {
+    const staleOnly = resolveTuning({
+      forgetWeights: { unread: 0, unneeded: 0, stale: 1, stage: 0 },
+    })
+    const rows = computeForgettability(
+      [mk({ slug: "recent", overdueDays: 1 }), mk({ slug: "ancient", overdueDays: 400 })],
+      staleOnly,
+    )
+    expect(rows[0]!.slug).toBe("ancient")
+    expect(rows[0]!.forgetScore).toBe(1)
+  })
+})
+
 describe("forgetting candidates (renderContext decay list)", () => {
   // Replicates the selection renderContext performs, so the ordering bug that
   // silently disabled forgetting for three live runs cannot come back.
+  // Mirrors renderContext exactly by calling the same function it does — an
+  // earlier version of this block re-implemented the selection inline and then
+  // silently stopped matching the shipped code.
   const pick = (rows: SalienceEntry[]) =>
-    rows
-      .filter((s) => s.usage30 === 0 && s.type !== "source" && s.type !== "overview")
-      .slice(-10)
-      .reverse()
+    computeForgettability(
+      rows.filter((s) => s.type !== "source" && s.type !== "overview" && s.type !== "dream"),
+      resolveTuning({}),
+    )
+      .filter((s) => s.usage30 === 0)
+      .slice(0, 10)
 
   const graph = graphOf([
     ["a", "hub"], ["b", "hub"], ["c", "hub"], ["d", "hub"], // hub: inDegree 4

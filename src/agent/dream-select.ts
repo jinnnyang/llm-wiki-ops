@@ -38,6 +38,12 @@ export interface DreamTuning {
   pEdgeBase: number
   pEdgeCertaintyCoef: number
   salienceWeights: { usage30: number; inDegree: number; overdue: number; touch: number }
+  /**
+   * Weights for computeForgettability. Separate from salienceWeights because the
+   * two questions disagree on sign: `overdue` is positive in both, but it means
+   * "go re-verify this" for salience and "nobody has maintained this" here.
+   */
+  forgetWeights: { unread: number; unneeded: number; stale: number; stage: number }
   pressureWeights: {
     created: number
     updated: number
@@ -92,6 +98,7 @@ export const DREAM_DEFAULTS: DreamTuning = {
   pEdgeBase: 0.4,
   pEdgeCertaintyCoef: 0.5,
   salienceWeights: { usage30: 0.35, inDegree: 0.25, overdue: 0.2, touch: 0.2 },
+  forgetWeights: { unread: 0.35, unneeded: 0.3, stale: 0.2, stage: 0.15 },
   pressureWeights: {
     created: 1,
     updated: 0.5,
@@ -132,6 +139,56 @@ export function seedCountFor(t: DreamTuning): number {
   const n = Math.round(hi - (hi - lo) * clamp01(t.certainty))
   // Always walk at least one seed: a dream with zero scenes is not a dream.
   return Number.isFinite(n) && n > 0 ? n : Math.max(1, lo)
+}
+
+/**
+ * How forgettable a node is, as its own score (§6.6).
+ *
+ * Salience answers "who deserves attention", and the decay list originally just
+ * took the bottom of that ranking. That is wrong, and a live wiki exposed it:
+ * `overdue` carries POSITIVE weight in salience (a long-unverified node needs
+ * revisiting), so a node 393 days overdue with zero reads and zero inbound edges
+ * scored 0.400 — higher than an ordinary 12-day-old node with 2 inbound edges at
+ * 0.210. The most forgettable material was sorted furthest from the forgetting
+ * list. Worse, 567 nodes tied at 0.21 and the "ranking" degenerated into
+ * alphabetical order.
+ *
+ * Forgettability is a different question with a different sign on nearly every
+ * term:
+ * - reads: none at all is the core signal.
+ * - inbound edges: what depends on this node. High in-degree means load-bearing,
+ *   so it counts AGAINST forgetting. Out-degree is deliberately ignored —
+ *   pointing at 中国 says nothing about whether anything needs you.
+ * - staleness: long past its reference clock counts FOR forgetting here, the
+ *   opposite of its role in salience.
+ * - stage: already compressed means the ladder has judged it once already, so it
+ *   is a natural next step rather than a fresh victim.
+ */
+export function computeForgettability(
+  entries: SalienceEntry[],
+  tuning: DreamTuning,
+): Array<SalienceEntry & { forgetScore: number }> {
+  const maxIn = Math.max(1, ...entries.map((e) => e.inDegree))
+  const maxOverdue = Math.max(1, ...entries.map((e) => e.overdueDays))
+  const w = tuning.forgetWeights
+
+  return entries
+    .map((e) => {
+      const unread = e.usage30 === 0 ? 1 : 1 / (1 + e.usage30)
+      const unneeded = 1 - e.inDegree / maxIn
+      const stale = Math.min(1, e.overdueDays / maxOverdue)
+      const stageBonus =
+        e.compression === "skeleton" ? 1 : e.compression === "condensed" ? 0.5 : 0
+      const forgetScore = round3(
+        w.unread * unread + w.unneeded * unneeded + w.stale * stale + w.stage * stageBonus,
+      )
+      return { ...e, forgetScore }
+    })
+    .sort((a, b) => b.forgetScore - a.forgetScore || a.slug.localeCompare(b.slug))
+}
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000
 }
 
 export function epsilonFor(t: DreamTuning): number {
