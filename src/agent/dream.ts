@@ -466,7 +466,25 @@ export async function prepareDream(options: DreamOptions): Promise<{
   const { tuning, pressure, pages, freshness, lastEntry, today, seed } =
     await preparePressure(options)
   const graph = buildGraphFromPages(pages)
-  const overdueDays = new Map(freshness.due.map((e) => [e.slug, e.overdueDays]))
+
+  // A SECOND freshness scan, on a different clock, for a different question.
+  //
+  // `freshness` above answers the check agent's question — "does this need
+  // re-verifying?" — where `updated` is a fair fallback clock: content changed,
+  // so re-check it. Salience/forgetting asks the opposite question, "has anyone
+  // maintained this?", and there `updated` is self-defeating, because node-ops
+  // bumps it on every write including the dream's own compressions.
+  //
+  // Measured before the fix: 阿里-alibaba was 413 days overdue and ranked #1 most
+  // forgettable; one compression bumped `updated` to today, dropped it out of the
+  // due list entirely, and it fell to #16. Compression pushed nodes OFF the
+  // forgetting list, so nothing ever reached the point of being deleted — the real
+  // reason skeleton → delete had never fired in a live run. It was never the
+  // model being conservative.
+  //
+  // Cheap: pure in-memory pass over pages already scanned.
+  const neglect = scanFreshnessFromPages(pages, { today, ignoreUpdatedClock: true })
+  const overdueDays = new Map(neglect.due.map((e) => [e.slug, e.overdueDays]))
 
   // Usage stats drive the salience "attention" component (§5.3).
   const stats = await computeUsageStats(options.wikiRoot, {

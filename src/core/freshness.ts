@@ -71,7 +71,11 @@ export interface FreshnessEntry {
   as_of?: string
   /** The clock scheduling actually used: checked if present, else updated. */
   referenceClock: string
-  clockSource: "checked" | "updated"
+  /**
+   * Which field the schedule was measured from. `as_of` only appears under
+   * ignoreUpdatedClock, where `updated` is deliberately not trusted.
+   */
+  clockSource: "checked" | "updated" | "as_of"
   /** Trial duration in days (referenceClock − as_of); 0 when as_of missing. */
   trialDays: number
   intervalDays: number
@@ -86,6 +90,24 @@ export interface ScanFreshnessOptions {
   today?: string
   /** Also return nodes due within this many days (lookahead window). */
   upcomingDays?: number
+  /**
+   * Drop `updated` as the reference-clock fallback, using `checked ?? as_of`.
+   *
+   * The default clock (`checked ?? updated`) is right for the CHECK agent: any
+   * content change is a reason to re-verify. It is wrong for any caller asking
+   * "has nobody maintained this?", because node-ops bumps `updated` on every
+   * write — so the asker's own writes reset the answer.
+   *
+   * Measured on a real wiki: 阿里-alibaba sat at 413 days overdue, one dream
+   * compressed it, and it left the due list entirely (413d → NOT DUE). Since the
+   * forgetting score reads staleness from this scan, compressing a node pushed it
+   * off the forgetting list — the ladder's second step disabled its own third
+   * step, which is why skeleton → delete had never once fired in a live run.
+   *
+   * computeSalience already sidesteps this for daysSinceChecked (see its comment);
+   * this flag closes the same hole for overdueDays.
+   */
+  ignoreUpdatedClock?: boolean
 }
 
 export interface FreshnessScanResult {
@@ -118,9 +140,16 @@ export function computeFreshness(
   as_of: string | undefined,
   checked: string | undefined,
   updated: string | undefined,
-): { trialDays: number; intervalDays: number; referenceClock: string; clockSource: "checked" | "updated" } | null {
-  const referenceClock = checked ?? updated
-  const clockSource: "checked" | "updated" = checked !== undefined ? "checked" : "updated"
+  opts?: { ignoreUpdatedClock?: boolean },
+): { trialDays: number; intervalDays: number; referenceClock: string; clockSource: "checked" | "updated" | "as_of" } | null {
+  // `updated` is bumped by every write, so callers measuring neglect must be able
+  // to opt out of it (see ScanFreshnessOptions.ignoreUpdatedClock). as_of is the
+  // honest fallback then: it says when the facts were true, and nothing but a
+  // deliberate fact revision moves it.
+  const fallback = opts?.ignoreUpdatedClock ? as_of : updated
+  const referenceClock = checked ?? fallback
+  const clockSource: "checked" | "updated" | "as_of" =
+    checked !== undefined ? "checked" : opts?.ignoreUpdatedClock ? "as_of" : "updated"
   if (referenceClock === undefined) return null
 
   let trialDays: number
@@ -189,7 +218,9 @@ export function scanFreshnessFromPages(
       continue
     }
 
-    const fresh = computeFreshness(page.as_of, page.checked, page.updated || undefined)
+    const fresh = computeFreshness(page.as_of, page.checked, page.updated || undefined, {
+      ignoreUpdatedClock: opts.ignoreUpdatedClock,
+    })
     if (fresh === null) {
       noReferenceClock++
       continue

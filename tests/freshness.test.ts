@@ -70,6 +70,49 @@ describe("computeFreshness", () => {
   })
 })
 
+describe("ignoreUpdatedClock — the neglect clock", () => {
+  // `updated` is bumped by node-ops on EVERY write, so a caller asking "has
+  // anyone maintained this node?" cannot use it as a fallback clock: its own
+  // writes reset the answer. This flag switches the fallback to as_of.
+  //
+  // The dream's forgetting ladder is the caller that needed it. See the
+  // regression test at the bottom of this file for the bug it caused.
+
+  it("falls back to as_of instead of updated", () => {
+    const r = computeFreshness("2025-01-01", undefined, "2026-08-01", {
+      ignoreUpdatedClock: true,
+    })!
+    expect(r.referenceClock).toBe("2025-01-01")
+    expect(r.clockSource).toBe("as_of")
+  })
+
+  it("still prefers checked when present — a real verification counts", () => {
+    // The flag distrusts `updated`, not `checked`: someone actually verifying the
+    // node IS maintenance, and should reset the neglect clock.
+    const r = computeFreshness("2025-01-01", "2026-06-01", "2026-08-01", {
+      ignoreUpdatedClock: true,
+    })!
+    expect(r.referenceClock).toBe("2026-06-01")
+    expect(r.clockSource).toBe("checked")
+  })
+
+  it("default behaviour is unchanged — updated still wins for the check agent", () => {
+    // Content changed, so re-verify: correct for check, wrong for forgetting.
+    const r = computeFreshness("2025-01-01", undefined, "2026-08-01")!
+    expect(r.referenceClock).toBe("2026-08-01")
+    expect(r.clockSource).toBe("updated")
+  })
+
+  it("returns null when neither checked nor as_of exists", () => {
+    // Without the flag this page has a clock (updated); with it, it has none —
+    // which must skip the page rather than invent one.
+    expect(computeFreshness(undefined, undefined, "2026-08-01")).not.toBeNull()
+    expect(
+      computeFreshness(undefined, undefined, "2026-08-01", { ignoreUpdatedClock: true }),
+    ).toBeNull()
+  })
+})
+
 describe("scanFreshness (wiki-level)", () => {
   async function makeFreshnessFixture(): Promise<FixtureWiki> {
     const root = await fs.mkdtemp(path.join((await import("node:os")).tmpdir(), "llm-wiki-fresh-"))
