@@ -284,7 +284,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "usage_stats",
       description:
-        "Access statistics from the usage log (design doc dream.md §4.5): per-node read/write counts over a day window, broken down by actor. top = most used, bottom = least used INCLUDING never-touched nodes (joined against the full slug set). Pure code, zero LLM. Use it to find what the wiki actually pays attention to (salience) and what has been forgotten — the dream agent's candidate signal.",
+        "Access statistics from the usage log (design doc dream.md §4.5): per-node read/write counts over a day window, broken down by actor. top = most used, bottom = least used INCLUDING never-touched nodes (joined against the full slug set). Pure code, zero LLM. Use it to find what the wiki actually pays attention to (salience) and what has been forgotten — the dream agent's candidate signal. NOTE: counts here include the calling agent's own reads, so they will not match a salience table that was computed with the caller excluded (the dream agent's injected table excludes actor=dream). Pass actor= to slice by a single agent.",
       inputSchema: {
         type: "object",
         properties: {

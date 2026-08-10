@@ -109,7 +109,7 @@ function computeUsageStats(wikiRoot: string, opts?: UsageStatsOptions): Promise<
 
 - 流式解析按天文件 → `Map<slug, counts>`；N（64 只是示例）由 `topN`/`bottomN` 参数配置。
 - **bottom-N 包含零访问节点**：与当前 slug 全集 join（有常驻图用常驻图，否则 `scanWiki`）——"使用最少"必须包含从未被碰过的。
-- 性能缓存（遵循"昂贵操作必须缓存"原则）：历史按天文件不可变 → 按文件名+大小 memoize 解析结果；只有今天的文件每次重读。
+- 性能缓存（遵循"昂贵操作必须缓存"原则）：历史按天文件不可变 → 按文件名+大小+mtime memoize 解析结果；**今天的文件不进缓存**——每次 append 都改变 size 即改变 key，缓存它只会每次追加留下一份当日全量事件的死副本，永不命中也永不淘汰（一轮 dream 多次查 usage_stats × 每个常驻 wiki）。今天的文件本来每次都 miss，缓存它零收益。
 - 暴露：MCP 工具 `usage_stats`（第 14 个工具）+ CLI `llm-wiki graph usage [--days] [--top N] [--bottom N] [--actor]`。
 
 ### 4.6 影响面
@@ -139,9 +139,12 @@ Journal 行 schema：
 {"date":"2026-08-07","seed":"20260807","pressure":{...快照...},
  "candidates":[{"slug":"x","usage":{"d1":0,"d7":2,"d30":5},"inDegree":3,"overdueDays":12}],
  "threads_carried":["hypothesis:...","contradicts:c-d"],
+ "touched_slugs":["compressed-a","compressed-b"],
  "changes":[{"tool":"wiki.add_edge","args":{...}}],
  "report":"..."}
 ```
+
+`scenes` 与 `touched_slugs` 都从**纯代码/tool log** 记录，不取模型自述——模型会误报自己的输入与动作（实跑见过报告"0 场景"却确实用了场景）。`touched_slugs` 供下一轮扣除自身压缩造成的 `updated`（§5.2）。
 
 不另设 digest 文件（如无必要勿增实体）。
 
@@ -159,6 +162,15 @@ Journal 行 schema：
 | 距上次 dream 天数 | ×1 |
 
 输出人类可读的压力报告：各分项贡献 + 总分 + 阈值对照（如 `pressureScore 14 ≥ threshold 10 → 建议做梦`）。阈值是 `DreamOptions.pressureThreshold` 字段（默认 10，初始值，可调）。量级校准：注意"距上次 dream 天数 ×1"随时间累积——闲 wiki 不活动也会缓慢升压，这是设计意图（久不做梦本身就是压力）。阈值 10 ≈ 忙 wiki 几天的活动量，或闲 wiki 约 10 天没做梦。初始值跑几轮真实 wiki 后再调。**高压力是"建议做梦"，不是门禁**（镜子不是缰绳）；v1 触发 = 手动 + `--pressure` 读数，不做自动调度。dream 主运行时压力快照无条件注入 prompt——数字给模型自己看，深浅自决。
+
+**pressure 防自污染（实施后复审补）**：dream 的产物有两类，需要两道独立排除。
+
+1. **梦境页**：昨夜写的 dream 页带当夜 `created`，五个新梦境页会给下次运行白送五分——按 `type !== "dream"` 排除。
+2. **被压缩的知识页**：压缩改写的是**普通知识页**，不在类型过滤范围内，而 `node-ops.ts` 无条件 `fm.updated = today()`——六个压缩就是六个"更新页面"。按 **slug 排除**：journal 新增 `touched_slugs`（从 tool log 提取 update/delete/rename 的 slug，不读模型自述），下次算 pressure 时扣除。
+
+第 2 条曾被日期比较掩盖：`updated > lastDreamDate` 是严格大于，压缩写入通常落在 journal 同一天，所以分数**碰巧**正确。23:50 UTC 启动、00:05 写入的 dream 打破这个巧合（journal date 08-07、`updated` 08-08），白送分立刻出现。slug 身份对两种情况都成立。这是同一形状的第四例——前三例为 usage 的 `excludeActor`、touch 用 checked 钟、梦境页按类型排除。
+
+排除只持续一次 dream 且按 slug 精确匹配：昨夜被压缩、今晨被人类改写的节点，仍然计入压力。
 
 ### 5.3 Salience（谁值得梦）—— 综合分，原始数字进 prompt
 
