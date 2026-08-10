@@ -39,17 +39,21 @@ function typeHeading(type: PageType): string {
   return `## ${type.charAt(0).toUpperCase()}${type.slice(1)}`
 }
 
-/** All known type headings (for detecting custom sections). */
-const KNOWN_HEADINGS = new Set([
-  "## Entities",
-  "## Concepts",
-  "## Sources",
-  "## Queries",
-  "## Comparisons",
-  "## Synthesis",
-  "## Overview",
-  "## Other",
-])
+/**
+ * All headings generateIndexContent can emit — derived from typeHeading, never
+ * hand-listed.
+ *
+ * A hand-maintained copy silently rots: `## Dreams` was missing here while
+ * typeHeading already produced it, so rebuildIndexPreservingCustom read the
+ * generated Dreams section as a user-written custom section and appended a
+ * second copy after the generated one. Every rebuild added another
+ * (1 → 2 → 3 …), and since the dream agent calls rebuild_index at the end of
+ * each run, index.md grew a duplicate Dreams block every night.
+ *
+ * Deriving from KNOWN_TYPE_ORDER means adding a page type can never reintroduce
+ * this class of bug. "## Other" is not a type heading, so it stays explicit.
+ */
+const KNOWN_HEADINGS = new Set([...KNOWN_TYPE_ORDER.map(typeHeading), "## Other"])
 
 /**
  * Generate the full index.md content from a list of nodes.
@@ -214,7 +218,14 @@ export function rebuildIndexPreservingCustom(
 
   if (customSections.length === 0) return generated
 
-  // Append custom sections after generated content
+  // Append custom sections after generated content.
+  //
+  // Each captured section is trimmed at the end, not just the generated block:
+  // a section's own trailing blank lines are re-emitted verbatim and then a "\n"
+  // is appended, so without this the file gained one blank line per rebuild
+  // (1382 → 1383 → 1384 …) forever. Rebuilding must be a fixed point.
   const trimmed = generated.trimEnd()
-  return `${trimmed}\n\n${customSections.join("\n\n")}\n`
+  const sections = customSections.map((s) => s.trimEnd()).filter((s) => s.length > 0)
+  if (sections.length === 0) return generated
+  return `${trimmed}\n\n${sections.join("\n\n")}\n`
 }
