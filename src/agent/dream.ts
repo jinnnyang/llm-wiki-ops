@@ -588,13 +588,42 @@ function renderContext(
     `The compression column is the node's CURRENT stage — check it before compressing anything. active → condensed → skeleton → delete, at most one step per dream. Only a node already at \`skeleton\` may be deleted. Scores are already damped by stage, so a skeleton node ranking low is expected, not an oversight.`,
   )
 
-  const forgotten = salience.filter((s) => s.usage30 === 0).slice(0, 10)
+  // Forgetting candidates: LOWEST salience first, and only pages the ladder is
+  // allowed to touch.
+  //
+  // The previous version was `filter(usage30 === 0).slice(0, 10)` on a list
+  // sorted by DESCENDING score — so it handed over the highest-scoring
+  // never-touched pages, i.e. the hubs. On a real wiki that meant offering
+  // 中国 (inDegree 136), 美国, 美联储 as "candidates for forgetting" while
+  // 战争钨 and 关税大战 never appeared in the prompt at all. Three live runs did
+  // zero compression and the model explained why: "the never-touched nodes are
+  // hubs/overviews that must not be compressed" — a correct reading of a broken
+  // list.
+  //
+  // source and overview are filtered out here rather than left for the prompt to
+  // reject: they are permanently exempt (§6.5), so spending candidate slots on
+  // them just crowds out the pages that could actually decay. hub pages stay in —
+  // "high in-degree" is a judgement call the model should make, and the numbers
+  // are right there in the table.
+  const forgettable = salience.filter(
+    (s) => s.usage30 === 0 && s.type !== "source" && s.type !== "overview",
+  )
+  const forgotten = forgettable.slice(-10).reverse()
   if (forgotten.length) {
     lines.push(
       "",
-      `## Never touched in the last 30 days (${forgotten.length} shown) — candidates for both replay and forgetting`,
+      `## Never read in the last 30 days — lowest salience first (${forgotten.length} of ${forgettable.length})`,
     )
-    lines.push(forgotten.map((s) => s.slug).join(", "))
+    lines.push(
+      `These are the decay candidates: nobody has read them and they score at the bottom. Check the in-degree before compressing — a node with many inbound links is load-bearing even when unread, and hubs must stay intact. Source and overview pages are already excluded.`,
+    )
+    lines.push(`| slug | score | inDeg | overdue | compression |`)
+    lines.push(`|---|---|---|---|---|`)
+    for (const s of forgotten) {
+      lines.push(
+        `| ${s.slug} | ${s.score} | ${s.inDegree} | ${s.overdueDays} | ${s.compression ?? "active"} |`,
+      )
+    }
   }
 
   lines.push("", "## Open threads")

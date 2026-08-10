@@ -668,6 +668,76 @@ describe("resolveDreamsDir", () => {
   })
 })
 
+describe("forgetting candidates (renderContext decay list)", () => {
+  // Replicates the selection renderContext performs, so the ordering bug that
+  // silently disabled forgetting for three live runs cannot come back.
+  const pick = (rows: SalienceEntry[]) =>
+    rows
+      .filter((s) => s.usage30 === 0 && s.type !== "source" && s.type !== "overview")
+      .slice(-10)
+      .reverse()
+
+  const graph = graphOf([
+    ["a", "hub"], ["b", "hub"], ["c", "hub"], ["d", "hub"], // hub: inDegree 4
+    ["a", "orphan-linked"],                                  // inDegree 1
+  ])
+  const pages = [
+    page({ slug: "hub" }),
+    page({ slug: "orphan-linked" }),
+    page({ slug: "orphan" }),
+    page({ slug: "a" }), page({ slug: "b" }), page({ slug: "c" }), page({ slug: "d" }),
+    page({ slug: "src", type: "source" }),
+    page({ slug: "overview", type: "overview" }),
+  ]
+  const rank = () =>
+    computeSalience(
+      { pages, graph, usage: new Map(), overdueDays: new Map(), today: "2026-08-10" },
+      resolveTuning({}),
+    )
+
+  it("offers the LOWEST scoring pages, not the highest", () => {
+    // The bug: `filter(usage30 === 0).slice(0, 10)` on a descending list returned
+    // the top of the ranking. A live wiki then showed 中国 (inDegree 136) as a
+    // "forgetting candidate" while 战争钨 never reached the prompt at all.
+    const rows = rank()
+    const candidates = pick(rows)
+    const scores = candidates.map((c) => c.score)
+
+    expect(scores[0]).toBeLessThanOrEqual(scores[scores.length - 1])
+    // The hub scores highest here, so it must NOT lead the decay list.
+    expect(candidates[0]!.slug).not.toBe("hub")
+  })
+
+  it("never offers source or overview pages", () => {
+    // Permanently exempt (§6.5) — leaving them in burns candidate slots on pages
+    // the model is required to refuse.
+    const slugs = pick(rank()).map((c) => c.slug)
+    expect(slugs).not.toContain("src")
+    expect(slugs).not.toContain("overview")
+  })
+
+  it("keeps unread hub pages in the list, with in-degree visible", () => {
+    // Not filtered out: "load-bearing despite being unread" is the model's call,
+    // and the table carries the number it needs. Shown, not enforced.
+    const rows = rank()
+    const hub = rows.find((r) => r.slug === "hub")!
+    expect(hub.inDegree).toBe(4)
+    expect(hub.usage30).toBe(0)
+    expect(rows.filter((r) => r.usage30 === 0).some((r) => r.slug === "hub")).toBe(true)
+  })
+
+  it("excludes anything that was actually read", () => {
+    const usage = new Map([
+      ["orphan", { slug: "orphan", reads: 5, writes: 0, byActor: { reason: 5 }, lastTs: "x" }],
+    ])
+    const rows = computeSalience(
+      { pages, graph, usage, overdueDays: new Map(), today: "2026-08-10" },
+      resolveTuning({}),
+    )
+    expect(pick(rows).map((c) => c.slug)).not.toContain("orphan")
+  })
+})
+
 describe("temperatureFor", () => {
   it("defaults to the conventional 0.5 and ignores certainty", () => {
     // Deriving temperature from certainty was tried and refuted: a live run at

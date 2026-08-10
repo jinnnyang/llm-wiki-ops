@@ -296,6 +296,30 @@ agent loop 已在首次写操作前自动 git snapshot（`safety.ts`/`loop.ts` �
 - **永不压缩**：`sources/`（溯源，引用目标）与 `overview`（根地图）。entities/concepts 自由压缩。
 - **不新增 `compress_node` MCP 工具**：`update_node` 的整页替换就是压缩原语（get_node → 模型浓缩 → 整页写回），但要给 `UpdateNodePatch` 与 MCP `update_node` schema 各加一个 `compression?: string` 字段（§6.1），否则没有写路径能碰 compression。内容丢失风险由 pre-write snapshot 兜底——research 早已带着同样的风险工作。新工具是把 prompt 协议已能治理的东西再编码一遍，多余实体。
 
+### 6.6 遗忘候选的排序（实跑后补 —— 遗忘曾静默失效）
+
+**症状**：连续三次真跑 `update_node` 全为 0，遗忘功能形同关闭。模型在报告里给的理由是：
+
+> The never-touched nodes (中国, 美国, 伊朗, 美联储…) are hubs/overviews that must not be compressed.
+
+这个判断是**对的**——错的是喂给它的候选清单。
+
+**根因**（`dream.ts` renderContext）：
+
+```ts
+const forgotten = salience.filter((s) => s.usage30 === 0).slice(0, 10)
+```
+
+`salience` 按分数**降序**排列，所以 `filter + slice(0,10)` 取的是"零访问节点里分数最高的十个"——也就是枢纽。真 wiki 上这意味着把 `中国`（入度 136）、`美国`、`美联储` 当作"遗忘候选"递给模型，而 `战争钨`、`关税大战` 这些真正无人问津的节点**从未进入 prompt**。标题写着"candidates for forgetting"，内容是绝对不能碰的东西。
+
+**修法**：取 `slice(-10).reverse()`（最低分优先），并在纯代码层过滤掉 `source` / `overview`——它们按 §6.5 永久豁免，占候选名额只会挤掉真正能衰减的页。渲染成带 `inDeg` / `overdue` / `compression` 的表格，而不是一行 slug 逗号列表：模型需要入度才能判断"未被读但承重"。
+
+**hub 页不做代码过滤**：高入度是否等于承重是判断题，数字摊在表里让模型自己决定（镜子不是缰绳）。
+
+**测试环境的坑**：新复制的 wiki 里 1150 页全部 `usage30 = 0`，salience 退化成只看 inDegree，底部塞满刚写的梦境页。要验证遗忘必须先造出真实访问分布——`scripts/seed-usage-log.py` 按 5% 热 / 15% 温 / 80% 冷写入 usage log（actor 用 reason/check/cli，绝不用 dream，否则被 `excludeActor` 排除）。
+
+**修复后实跑**：`战争钨-tungsten-as-strategic-mineral`（零访问、入度 0、concept）active → condensed，1319 → 935 字符（70%），7 条 `related` 边与 7 个 wikilink 全保留，核心数字（53% 储量 / 79% 产量 / 85% APT / 涨 5 倍 / 2 年与 5 年重建期）无丢失。
+
 ## 7. dream 产物（幻觉 / 灵感）
 
 **用户洞察**：dream 新增的大多数内容是幻觉、是昙花一现的灵感，只有经仔细核验后才能成为突破性创新 → 必须带 UNVERIFIED 状态与警告，留给清醒智能体核验。
