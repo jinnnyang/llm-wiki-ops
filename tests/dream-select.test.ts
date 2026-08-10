@@ -26,6 +26,7 @@ import {
   buildDreamScenes,
   buildWalkAdjacency,
   collectOpenThreads,
+  findThemeMatches,
   isHypothesisPage,
   countContradictsEdges,
   makeRng,
@@ -662,6 +663,65 @@ describe("resolveDreamsDir", () => {
     // edges and can never be verified: the whole loop breaks.
     expect(() => resolveDreamsDir(root, "dreams")).toThrow(/inside <wikiRoot>\/wiki/)
     expect(() => resolveDreamsDir(root, "../escape")).toThrow(/inside <wikiRoot>\/wiki/)
+  })
+})
+
+describe("findThemeMatches", () => {
+  const pages = [
+    page({ slug: "稀土出口管制", title: "稀土出口管制", tags: ["稀土", "贸易"] }),
+    page({ slug: "重稀土矿源", title: "重稀土矿源" }),
+    page({ slug: "章鱼能源", title: "章鱼能源 (Octopus Energy)" }),
+    page({ slug: "土地财政退场", title: "土地财政退场" }),
+    page({ slug: "quantum-computing-race", title: "Quantum Computing Race" }),
+  ]
+
+  it("finds a theme the wiki genuinely covers", () => {
+    const m = findThemeMatches(pages, "稀土")
+    expect(m.count).toBe(2)
+    expect(m.hasPurchase).toBe(true)
+    expect(m.slugs).toContain("稀土出口管制")
+  })
+
+  it("reports no purchase for a theme the wiki knows nothing about", () => {
+    const m = findThemeMatches(pages, "quantum entanglement")
+    // "quantum" hits the Latin page; "entanglement" does not. One page is a
+    // coincidence, not coverage.
+    expect(m.hasPurchase).toBe(false)
+  })
+
+  it("treats a lone bigram collision as no purchase, not as coverage", () => {
+    // The live failure: on a 1150-page economics wiki the theme
+    // 深海章鱼的求偶仪式 matched exactly one page — 章鱼能源, i.e. Octopus Energy.
+    // Counting that as a thread to follow would suppress the guidance written
+    // for precisely this case.
+    const m = findThemeMatches(pages, "深海章鱼的求偶仪式")
+    expect(m.count).toBe(1)
+    expect(m.slugs).toEqual(["章鱼能源"])
+    expect(m.hasPurchase).toBe(false)
+  })
+
+  it("does not match on single CJK characters", () => {
+    // "海" alone would hit 海峡/航海/海外 and manufacture false coverage for a
+    // theme the graph has nothing on — bigrams are the minimum unit.
+    const sea = [page({ slug: "霍尔木兹海峡通行权", title: "霍尔木兹海峡通行权" })]
+    expect(findThemeMatches(sea, "深海章鱼").count).toBe(0)
+  })
+
+  it("matches tags, not just slug and title", () => {
+    expect(findThemeMatches(pages, "贸易").count).toBe(1)
+  })
+
+  it("returns no purchase for a theme with no usable terms", () => {
+    const m = findThemeMatches(pages, "!!! ???")
+    expect(m.count).toBe(0)
+    expect(m.hasPurchase).toBe(false)
+  })
+
+  it("caps the example slug list but keeps the full count", () => {
+    const many = Array.from({ length: 20 }, (_, i) => page({ slug: `稀土-${i}` }))
+    const m = findThemeMatches(many, "稀土", 3)
+    expect(m.count).toBe(20)
+    expect(m.slugs).toHaveLength(3)
   })
 })
 

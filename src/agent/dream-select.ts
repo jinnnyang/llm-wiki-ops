@@ -637,6 +637,83 @@ export function pruneCarriedThreads(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+// ── Theme matching (design: dream.md §5.6) ──────────────────────────
+
+/**
+ * Search terms for a theme string.
+ *
+ * Latin words of 3+ chars, plus CJK bigrams — Chinese has no spaces, so
+ * "深海章鱼的求偶仪式" has to be cut somewhere and 2-grams are the cheapest cut
+ * that still discriminates. Single CJK chars are deliberately NOT used: "海"
+ * alone would match 海峡/航海/海外 and report a hit for a theme the graph knows
+ * nothing about, which is the exact failure this function exists to detect.
+ */
+export function themeTerms(theme: string): string[] {
+  const terms = new Set<string>()
+
+  for (const word of theme.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    // Latin only: a CJK run has no word boundaries to have found here.
+    if (word.length >= 3 && !/[\u4e00-\u9fff]/.test(word)) terms.add(word)
+  }
+
+  for (const run of theme.replace(/[^\u4e00-\u9fff]+/g, " ").split(/\s+/)) {
+    for (let i = 0; i + 2 <= run.length; i++) terms.add(run.slice(i, i + 2))
+  }
+
+  return [...terms]
+}
+
+/** Below this many matching pages, a theme has no real thread to follow. */
+export const THEME_PURCHASE_MIN = 2
+
+export interface ThemeMatch {
+  /** How many pages the theme touches at all. */
+  count: number
+  /** A few example slugs, for the prompt. */
+  slugs: string[]
+  /**
+   * Whether there is enough material to actually follow the theme.
+   *
+   * Not simply `count > 0`: on a 1150-page economics wiki the theme
+   * "深海章鱼的求偶仪式" matched exactly one page — 章鱼能源, the UK energy
+   * retailer Octopus Energy. A bigram collision like that is not purchase on the
+   * theme, and treating it as one would suppress the zero-case guidance for the
+   * very case that needs it. A lone hit is reported to the model but does not
+   * count as a thread to follow.
+   */
+  hasPurchase: boolean
+}
+
+/**
+ * How much material the graph actually holds on a theme.
+ *
+ * Matched against slug/title/tags only, never the body: a passing mention deep
+ * in one page is not "the graph has material on this". The count goes into the
+ * prompt so a zero is VISIBLE to the model instead of silently producing a dream
+ * that ignores the theme it was given (observed: theme "深海章鱼的求偶仪式" on an
+ * economics wiki produced 7 pages of economics and never mentioned the theme,
+ * with no hint to the user that the theme found no purchase).
+ */
+export function findThemeMatches(
+  pages: ScannedPage[],
+  theme: string,
+  limit = 6,
+): ThemeMatch {
+  const terms = themeTerms(theme)
+  if (terms.length === 0) return { count: 0, slugs: [], hasPurchase: false }
+
+  const slugs: string[] = []
+  let count = 0
+  for (const page of pages) {
+    const haystack = `${page.slug} ${page.title} ${page.tags.join(" ")}`.toLowerCase()
+    if (terms.some((t) => haystack.includes(t))) {
+      count++
+      if (slugs.length < limit) slugs.push(page.slug)
+    }
+  }
+  return { count, slugs, hasPurchase: count >= THEME_PURCHASE_MIN }
+}
+
 /** Whole days from an ISO date to another; negative clamps to 0. */
 export function daysBetween(from: string, to: string): number {
   const a = Date.parse(`${from}T00:00:00Z`)
