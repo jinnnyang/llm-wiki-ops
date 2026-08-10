@@ -252,8 +252,14 @@ const WRITE_OPS = new Set([
 
 /**
  * Parse cache for immutable day-files (the "expensive operations must be
- * cached" rule). Keyed by path + size + mtime; today's file changes constantly
- * and simply misses on every new append.
+ * cached" rule). Keyed by path + size + mtime.
+ *
+ * Only *past* day-files are cached. Today's file is deliberately excluded: every
+ * append changes its size, so its key changes too, and the old entry — holding a
+ * full copy of the day's events — would never be read again nor evicted. A long
+ * dream calling usage_stats a few dozen times would leave a few dozen copies of
+ * today's log in memory, once per resident wiki. Today's file misses on every
+ * append anyway, so caching it buys nothing.
  */
 const parseCache = new Map<string, UsageEvent[]>()
 
@@ -271,7 +277,7 @@ function recentDays(days: number): string[] {
   return out
 }
 
-async function parseDayFile(file: string): Promise<UsageEvent[]> {
+async function parseDayFile(file: string, isToday: boolean): Promise<UsageEvent[]> {
   let stat: Awaited<ReturnType<typeof fs.stat>>
   try {
     stat = await fs.stat(file)
@@ -280,8 +286,10 @@ async function parseDayFile(file: string): Promise<UsageEvent[]> {
   }
 
   const key = `${file}:${stat.size}:${stat.mtimeMs}`
-  const cached = parseCache.get(key)
-  if (cached) return cached
+  if (!isToday) {
+    const cached = parseCache.get(key)
+    if (cached) return cached
+  }
 
   const events: UsageEvent[] = []
   try {
@@ -298,7 +306,9 @@ async function parseDayFile(file: string): Promise<UsageEvent[]> {
     return []
   }
 
-  parseCache.set(key, events)
+  // Today's file keeps growing: caching it would accumulate one dead entry per
+  // append (see parseCache above).
+  if (!isToday) parseCache.set(key, events)
   return events
 }
 
@@ -334,8 +344,14 @@ export async function computeUsageStats(
     if (ev.ts > entry.lastTs) entry.lastTs = ev.ts
   }
 
-  for (const day of recentDays(days)) {
-    const events = await parseDayFile(path.join(usageDir(wikiRoot), `${day}.jsonl`))
+  // recentDays returns most-recent-first, so index 0 is today — the only file
+  // still being appended to, and the only one not worth caching.
+  const window = recentDays(days)
+  for (let i = 0; i < window.length; i++) {
+    const events = await parseDayFile(
+      path.join(usageDir(wikiRoot), `${window[i]}.jsonl`),
+      i === 0,
+    )
     if (events.length > 0) filesRead++
 
     for (const ev of events) {

@@ -371,6 +371,74 @@ describe("computeUsageStats", () => {
     expect(stats.top.map((u) => u.slug)).toEqual(["a"])
     expect(stats.top[0].byActor).toEqual({ reason: 1 })
   })
+
+  it("sees events appended to today's file after an earlier call", async () => {
+    // Today's file is deliberately not cached: its size changes on every append,
+    // so a cached entry would be dead weight that never gets read or evicted.
+    //
+    // Same trick as the past-file test below, for the same reason: a plain
+    // re-seed changes the file length, which changes the cache key, so the
+    // second read would miss even WITH today caching enabled and the test would
+    // pass either way. Pinning size and mtime makes the key identical, so only
+    // the isToday branch can produce a fresh read.
+    const today = dayOffset(0)
+    const file = path.join(usageDir(root), `${today}.jsonl`)
+
+    await seedDay(today, [{ slug: "aa" }, { slug: "bb" }])
+    const pinned = new Date(Date.now() - 3600_000)
+    await fs.utimes(file, pinned, pinned)
+    const before = await fs.stat(file)
+
+    const first = await computeUsageStats(root)
+    expect(first.top.map((u) => u.slug).sort()).toEqual(["aa", "bb"])
+
+    const raw = await fs.readFile(file, "utf8")
+    await fs.writeFile(file, raw.replace(/aa/g, "xx").replace(/bb/g, "yy"), "utf8")
+    await fs.utimes(file, pinned, pinned)
+    const after = await fs.stat(file)
+    expect(after.size).toBe(before.size)
+    expect(after.mtimeMs).toBe(before.mtimeMs)
+
+    // Cached, this would still report the old slugs.
+    const second = await computeUsageStats(root)
+    expect(second.top.map((u) => u.slug).sort()).toEqual(["xx", "yy"])
+  })
+
+  it("still serves an unchanged past day-file from cache", async () => {
+    // The flip side: history is immutable, so past files must keep hitting the
+    // cache. The key is path+size+mtime, so rewriting the file with same-length
+    // content and restoring its mtime is indistinguishable from "unchanged" —
+    // a cache hit returns the OLD slugs, a miss would return the new ones.
+    const yesterday = dayOffset(1)
+    const file = path.join(usageDir(root), `${yesterday}.jsonl`)
+
+    await seedDay(yesterday, [{ slug: "aa" }, { slug: "bb" }])
+    // Pin mtime through utimes FIRST: it truncates the sub-millisecond fraction
+    // that fs.stat reports (…021.3242 → …021), so a later utimes-restore would
+    // otherwise produce a different cache key than the original stat did.
+    const pinned = new Date(Date.now() - 86_400_000)
+    await fs.utimes(file, pinned, pinned)
+    const before = await fs.stat(file)
+
+    const first = await computeUsageStats(root, { days: 7 })
+    expect(first.top.map((u) => u.slug).sort()).toEqual(["aa", "bb"])
+
+    const raw = await fs.readFile(file, "utf8")
+    await fs.writeFile(file, raw.replace(/aa/g, "xx").replace(/bb/g, "yy"), "utf8")
+    await fs.utimes(file, pinned, pinned)
+    const after = await fs.stat(file)
+    // Same key, or the test proves nothing.
+    expect(after.size).toBe(before.size)
+    expect(after.mtimeMs).toBe(before.mtimeMs)
+
+    const second = await computeUsageStats(root, { days: 7 })
+    expect(second.top.map((u) => u.slug).sort()).toEqual(["aa", "bb"])
+
+    // And the cache is droppable on demand.
+    clearUsageCache()
+    const third = await computeUsageStats(root, { days: 7 })
+    expect(third.top.map((u) => u.slug).sort()).toEqual(["xx", "yy"])
+  })
 })
 
 // ── Facade integration ──────────────────────────────────────────────
