@@ -133,6 +133,12 @@ export interface JournalEntry {
   candidates?: Array<{ slug: string; salience: number; usage30: number; inDegree: number; overdueDays: number }>
   /** Threads left unresolved by this dream — next dream revisits them first. */
   threads_carried?: string[]
+  /**
+   * Slugs this dream wrote to itself. The next dream subtracts them from its
+   * new/updated pressure counts (§5.2) — a dream's own compression writes are
+   * not evidence that the wiki needs dreaming.
+   */
+  touched_slugs?: string[]
   changes?: unknown[]
   report?: string
 }
@@ -221,6 +227,23 @@ export interface PressureInput {
   /** Previous dream's date (journal), or null when there is none. */
   lastDreamDate: string | null
   today: string
+  /**
+   * Slugs the previous dream wrote itself (journal `touched_slugs`).
+   *
+   * Excluded from the new/updated counts. Without this, a dream that compresses
+   * six knowledge nodes hands the next run six updated-pages — dream more, score
+   * higher, "should" dream more. Note this is NOT the same guard as the
+   * `type !== "dream"` filter below: that one drops the dream's own *pages*,
+   * while compression rewrites ordinary *knowledge* pages, which stay in scope.
+   *
+   * The date comparison alone used to hide this: `updated > lastDreamDate` is
+   * strictly greater, and compression writes normally land on the journal's own
+   * date, so the counts came out right by coincidence. A dream that starts at
+   * 23:50 UTC and writes at 00:05 breaks that coincidence — journal date 08-07,
+   * `updated` 08-08 — and the free points reappear. Slug identity holds either
+   * way.
+   */
+  lastDreamTouchedSlugs?: string[]
 }
 
 /**
@@ -231,16 +254,21 @@ export interface PressureInput {
  * which would need state the journal does not keep.
  */
 export function computePressure(input: PressureInput, tuning: DreamTuning): PressureReport {
-  const { pages, overdueCount, lastDreamDate, today } = input
+  const { pages, overdueCount, lastDreamDate, today, lastDreamTouchedSlugs } = input
   const w = tuning.pressureWeights
 
-  // The dream's OWN output must not raise its own pressure. Dream pages written
-  // last night carry that night's created date, so counting them means five new
-  // dream pages hand the next run five free points — dream more, score higher,
-  // "should" dream more. Third instance of this loop shape, after usage stats
-  // (excludeActor) and the touch clock (checked, not updated); freshness already
-  // excludes dreams by type, so overdueCount arrives clean.
-  const knowledge = pages.filter((p) => p.type !== "dream")
+  // The dream's OWN output must not raise its own pressure. Two separate
+  // exclusions are needed, because a dream produces two kinds of writes:
+  //
+  //   1. New dream pages, carrying that night's created date → filtered by type.
+  //   2. Compression rewrites of ordinary knowledge pages, which bump `updated`
+  //      unconditionally (node-ops.ts) → filtered by slug identity, below.
+  //
+  // Fourth instance of this loop shape, after usage stats (excludeActor), the
+  // touch clock (checked, not updated), and dream pages by type. Freshness
+  // already excludes dreams by type, so overdueCount arrives clean.
+  const touched = new Set(lastDreamTouchedSlugs ?? [])
+  const knowledge = pages.filter((p) => p.type !== "dream" && !touched.has(p.slug))
 
   const isNew = (p: ScannedPage) => !!lastDreamDate && p.created > lastDreamDate
   const created = lastDreamDate ? knowledge.filter(isNew).length : knowledge.length
@@ -599,9 +627,10 @@ export function pruneCarriedThreads(
     // journal format (pre-prefix): they can't be told apart from a marker a
     // future version might introduce — both are free-form strings — and dropping
     // a live lead is worse than carrying a stale one. Decided rather than
-    // overlooked: `.llm-wiki-ops/` is gitignored and prefixed entries are what
-    // gets written now, so any bare entries are from a pre-release journal and
-    // will age out on their own.
+    // overlooked. Note these do NOT age out on their own: nothing prunes an
+    // unprefixed entry, so a pre-release journal carries them forever. Harmless
+    // in practice (`.llm-wiki-ops/` is gitignored, so only a local journal can
+    // have them) but if one ever clutters the prompt, edit the journal by hand.
     return true
   })
 }

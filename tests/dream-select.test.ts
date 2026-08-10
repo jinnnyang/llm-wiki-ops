@@ -34,7 +34,7 @@ import {
   appendJournalEntry,
   journalPath,
 } from "../src/agent/dream-select.js"
-import { resolveDreamsDir, DEFAULT_DREAMS_DIR } from "../src/agent/dream.js"
+import { resolveDreamsDir, DEFAULT_DREAMS_DIR, extractTouchedSlugs } from "../src/agent/dream.js"
 import { normalizeCompression } from "../src/types.js"
 
 // ── Fixtures ────────────────────────────────────────────────────────
@@ -198,6 +198,61 @@ describe("computePressure", () => {
     )
     expect(r.components.find((c) => c.name === "new pages")!.count).toBe(0)
     expect(r.components.find((c) => c.name === "updated pages")!.count).toBe(0)
+  })
+
+  it("ignores knowledge pages the previous dream compressed itself", () => {
+    // Fourth instance of the same loop shape, and the one the type filter above
+    // does NOT catch: compression rewrites ordinary knowledge pages, so they stay
+    // in scope and their bumped `updated` reads as fresh activity.
+    //
+    // The date comparison hid this: `updated > lastDreamDate` is strictly
+    // greater, and compression normally lands on the journal's own date. A dream
+    // that starts 23:50 UTC and writes 00:05 breaks the coincidence — journal
+    // date 08-07, updated 08-08 — and six compressions become six free points.
+    const compressed = [1, 2, 3, 4, 5, 6].map((i) =>
+      page({ slug: `kb-${i}`, created: "2026-01-01", updated: "2026-08-08", compression: "condensed" }),
+    )
+
+    const naive = computePressure(
+      { pages: compressed, overdueCount: 0, lastDreamDate: "2026-08-07", today: "2026-08-09" },
+      tuning,
+    )
+    // Without the slug exclusion the free points are real, not hypothetical.
+    expect(naive.components.find((c) => c.name === "updated pages")!.count).toBe(6)
+
+    const guarded = computePressure(
+      {
+        pages: compressed,
+        overdueCount: 0,
+        lastDreamDate: "2026-08-07",
+        lastDreamTouchedSlugs: compressed.map((p) => p.slug),
+        today: "2026-08-09",
+      },
+      tuning,
+    )
+    expect(guarded.components.find((c) => c.name === "updated pages")!.count).toBe(0)
+    expect(guarded.components.find((c) => c.name === "new pages")!.count).toBe(0)
+  })
+
+  it("still counts pages a human edited after the dream touched them", () => {
+    // The exclusion is per-slug and lasts exactly one dream. A node the dream
+    // compressed last night and a human rewrote this morning is genuine activity;
+    // it must not be permanently invisible to pressure.
+    const pages = [
+      page({ slug: "kb-1", created: "2026-01-01", updated: "2026-08-08" }),
+      page({ slug: "kb-2", created: "2026-01-01", updated: "2026-08-08" }),
+    ]
+    const r = computePressure(
+      {
+        pages,
+        overdueCount: 0,
+        lastDreamDate: "2026-08-07",
+        lastDreamTouchedSlugs: ["kb-1"], // only kb-1 was the dream's own write
+        today: "2026-08-09",
+      },
+      tuning,
+    )
+    expect(r.components.find((c) => c.name === "updated pages")!.count).toBe(1)
   })
 
   it("counts only knowledge pages on a first-ever dream", () => {
@@ -607,6 +662,63 @@ describe("resolveDreamsDir", () => {
     // edges and can never be verified: the whole loop breaks.
     expect(() => resolveDreamsDir(root, "dreams")).toThrow(/inside <wikiRoot>\/wiki/)
     expect(() => resolveDreamsDir(root, "../escape")).toThrow(/inside <wikiRoot>\/wiki/)
+  })
+})
+
+describe("extractTouchedSlugs", () => {
+  const call = (over: Partial<{ tool: string; args: Record<string, unknown>; error: string }>) => ({
+    iteration: 1,
+    tool: over.tool ?? "wiki.update_node",
+    args: over.args ?? {},
+    result: null,
+    error: over.error,
+    durationMs: 1,
+  })
+
+  it("collects slugs from the write ops that bump `updated`", () => {
+    const slugs = extractTouchedSlugs([
+      call({ tool: "wiki.update_node", args: { slug: "compressed-a", compression: "condensed" } }),
+      call({ tool: "wiki.delete_node", args: { slug: "gone" } }),
+      call({ tool: "wiki.rename_node", args: { old_slug: "before", new_slug: "after" } }),
+    ])
+    expect(slugs.sort()).toEqual(["after", "before", "compressed-a", "gone"])
+  })
+
+  it("ignores reads and edge ops — they do not bump `updated` on a page", () => {
+    // add_edge writes to related[] but the pressure counters key off created and
+    // updated, and edges have their own component. Only page rewrites matter here.
+    expect(
+      extractTouchedSlugs([
+        call({ tool: "wiki.get_node", args: { slug: "just-read" } }),
+        call({ tool: "wiki.read_graph", args: {} }),
+        call({ tool: "wiki.add_edge", args: { source: "a", target: "b" } }),
+      ]),
+    ).toEqual([])
+  })
+
+  it("skips failed calls — nothing was written", () => {
+    expect(
+      extractTouchedSlugs([
+        call({ tool: "wiki.update_node", args: { slug: "failed" }, error: "CONFLICT" }),
+      ]),
+    ).toEqual([])
+  })
+
+  it("dedupes a slug written more than once", () => {
+    expect(
+      extractTouchedSlugs([
+        call({ args: { slug: "twice" } }),
+        call({ args: { slug: "twice", tags: ["x"] } }),
+      ]),
+    ).toEqual(["twice"])
+  })
+
+  it("tolerates a bare tool name without the server prefix", () => {
+    // resolveToolName restores dropped prefixes, but a log written before that
+    // ran (or from a local tool) can still carry the bare form.
+    expect(extractTouchedSlugs([call({ tool: "update_node", args: { slug: "bare" } })])).toEqual([
+      "bare",
+    ])
   })
 })
 

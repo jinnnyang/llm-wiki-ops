@@ -356,6 +356,33 @@ function todayAndSeed(): { today: string; seed: string } {
 }
 
 /**
+ * Slugs this dream wrote to, taken from the tool call log.
+ *
+ * Recorded so the NEXT dream can subtract them from its pressure counts: a
+ * dream's own compression writes bump `updated` on ordinary knowledge pages,
+ * and counting those would mean "compressed more last night" reads as "the wiki
+ * needs dreaming". Read from the tool log rather than the model's prose, for
+ * the same reason scenes are (a model may misdescribe what it did).
+ *
+ * Failed calls are skipped — nothing was written. Dry-run calls never reach
+ * here because runDream skips journalling entirely.
+ */
+export function extractTouchedSlugs(toolCalls: AgentResult["toolCalls"]): string[] {
+  const slugs = new Set<string>()
+  for (const log of toolCalls) {
+    if (log.error) continue
+    const tool = log.tool.split(".").pop() ?? log.tool
+    if (tool !== "update_node" && tool !== "delete_node" && tool !== "rename_node") continue
+    // rename_node carries old_slug/new_slug; the others carry slug.
+    for (const key of ["slug", "old_slug", "new_slug"]) {
+      const value = log.args[key]
+      if (typeof value === "string" && value) slugs.add(value)
+    }
+  }
+  return [...slugs]
+}
+
+/**
  * The cheap half: pressure only.
  *
  * Needs pages + freshness + the journal's last entry, and nothing else — no
@@ -386,6 +413,7 @@ export async function preparePressure(options: DreamOptions): Promise<{
       pages,
       overdueCount: freshness.due.length,
       lastDreamDate: lastEntry?.date ?? null,
+      lastDreamTouchedSlugs: lastEntry?.touched_slugs,
       today,
     },
     tuning,
@@ -656,6 +684,9 @@ Dream now. Start from the ${prep.scenes.length} scenes above — read the nodes 
           ...prep.threads.contradictsEdges.map((e) => `contradicts:${e}`),
           ...prep.threads.needsVerification.map((s) => `needs-verification:${s}`),
         ].filter((v, i, arr) => arr.indexOf(v) === i),
+        // Taken from the tool log, so the next dream can discount its own
+        // compression writes instead of reading them as fresh activity.
+        touched_slugs: extractTouchedSlugs(result.toolCalls),
         report: result.finalMessage,
       })
     }
