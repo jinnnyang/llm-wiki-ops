@@ -36,6 +36,30 @@ export interface AgentConfig {
   dryRun?: boolean // intercept write ops, record without executing
   /** Conclusion-round behaviour. Omit for the default 300-word summary round. */
   conclusion?: ConclusionConfig
+  /**
+   * Sampling temperature for the main loop. Default 0.1.
+   *
+   * 0.1 suits the verification agents (check/purge/reason), where the job is to
+   * follow evidence and emit well-formed tool arguments. It is the wrong setting
+   * for dream: near-greedy decoding reproduces the same sentence shapes and the
+   * same reasoning move every time, which is exactly the sameness observed
+   * across five dream pages that were supposed to be five different ideas.
+   *
+   * Note this single knob also governs tool-argument sampling — dream page prose
+   * is written THROUGH write_file, so the text and the JSON around it come from
+   * the same distribution. Raising it buys variety at the cost of malformed
+   * arguments and mistyped slugs; the dangling-wikilink warning exists partly to
+   * catch that.
+   */
+  temperature?: number
+  /**
+   * Temperature for the conclusion round. Defaults to `temperature`.
+   *
+   * Worth pinning low even when the main loop runs hot: the conclusion reports
+   * what already happened, and a high temperature there invents operations the
+   * agent never performed (a bug this repo has already fixed once).
+   */
+  conclusionTemperature?: number
 }
 
 export interface ToolCallLog {
@@ -389,7 +413,7 @@ export async function runAgent(
     let response: ChatResponse
     try {
       response = await chat(
-        { messages: managedMessages, tools: allTools, temperature: 0.1 },
+        { messages: managedMessages, tools: allTools, temperature: config.temperature ?? 0.1 },
         config.llmConfig,
       )
     } catch (err) {
@@ -548,7 +572,12 @@ export async function runAgent(
         toolLogs,
       )
       const conclusionResp = await chat(
-        { messages: conclusionMessages, tools: [], temperature: 0.1 },
+        {
+          messages: conclusionMessages,
+          tools: [],
+          // Reporting, not inventing: stays low unless explicitly raised.
+          temperature: config.conclusionTemperature ?? config.temperature ?? 0.1,
+        },
         config.llmConfig,
       )
       conclusion = conclusionResp.message.content ?? undefined

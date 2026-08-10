@@ -38,6 +38,8 @@ import {
   pEdgeFor,
   epsilonFor,
   seedCountFor,
+  temperatureFor,
+  conclusionTemperatureFor,
   type DreamTuning,
   type PressureReport,
   type SalienceEntry,
@@ -69,6 +71,11 @@ export interface DreamOptions extends Partial<DreamTuning> {
   dryRun?: boolean
   /** --pressure: report the pressure reading and exit without dreaming. */
   pressureOnly?: boolean
+  /**
+   * Explicit sampling temperature, bypassing the certainty-derived value (§5.8).
+   * For probing extremes; normally let certainty decide.
+   */
+  temperature?: number
   llmConfig?: LlmConfig
 }
 
@@ -555,7 +562,7 @@ function renderContext(
   lines.push(`Dream seed: ${prep.seed} (same seed → same scenes; recorded in the journal)`)
   lines.push(renderThemeLine(options.theme, prep.themeMatch))
   lines.push(
-    `Certainty: ${tuning.certainty} → p_edge ${pEdgeFor(tuning).toFixed(2)} (${Math.round(pEdgeFor(tuning) * 100)}% of hops follow real edges, the rest teleport), ${seedCountFor(tuning)} seeds, epsilon floor ${epsilonFor(tuning).toFixed(3)}`,
+    `Certainty: ${tuning.certainty} → p_edge ${pEdgeFor(tuning).toFixed(2)} (${Math.round(pEdgeFor(tuning) * 100)}% of hops follow real edges, the rest teleport), ${seedCountFor(tuning)} seeds, epsilon floor ${epsilonFor(tuning).toFixed(3)}, sampling temperature ${options.temperature ?? temperatureFor(tuning)}`,
   )
 
   lines.push("", `## Pressure: ${pressure.score} (threshold ${pressure.threshold})`)
@@ -693,6 +700,10 @@ Dream now. Start from the ${prep.scenes.length} scenes above — read the nodes 
         timeoutMs,
         llmConfig,
         dryRun: options.dryRun,
+        // Derived from certainty (§5.8) — the sampler half of the same knob that
+        // controls teleport rate. Overridable for probing the extreme.
+        temperature: options.temperature ?? temperatureFor(prep.tuning),
+        conclusionTemperature: conclusionTemperatureFor(prep.tuning),
         conclusion: {
           // The report already is the final message — don't bury it.
           skipIfDeliverable: true,

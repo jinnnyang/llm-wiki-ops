@@ -49,6 +49,33 @@ export interface DreamTuning {
   /** Suggest dreaming at or above this score. Default 10. */
   pressureThreshold: number
   /**
+   * Sampling temperature (§5.8). Default 0.5 — a conventional middle setting,
+   * NOT derived from certainty.
+   *
+   * Deriving it was tried and rejected on evidence. certainty controls the graph
+   * walk, and the first version made it drive the sampler too, on the theory that
+   * near-greedy 0.1 was why five dream pages came out as five instances of one
+   * sentence shape. A live run at 1.9 refuted the theory in the worst way: the
+   * agent managed 4 tool calls, wrote ZERO dream pages, and emitted a report with
+   * broken syntax, invented tokens (`4-qinjin=real`), malformed wikilinks
+   * (`[[外汇||natural]]`) and claims about a page it never created.
+   *
+   * The reason is structural: dream page prose travels INSIDE write_file's
+   * arguments, so prose sampling and JSON sampling are the same distribution.
+   * Any temperature loose enough to shake up the writing also destroys the tool
+   * calls that do the writing. Creativity is not in the sampling noise — the one
+   * genuinely inventive page this project produced (the courtship-display lens)
+   * came out at 0.1, driven by an external framing that forced a structural
+   * displacement. That is the lever; temperature is not.
+   */
+  temperature: number
+  /**
+   * Conclusion-round temperature. Kept low on purpose: the report states what
+   * the dream actually did, and a hot sampler there invents operations that
+   * never happened.
+   */
+  tempConclusion: number
+  /**
    * Score multiplier per compression stage. Already-compressed nodes are worth
    * revisiting less often — without this a skeleton node keeps ranking as prime
    * material and gets re-compressed every single dream.
@@ -74,6 +101,8 @@ export const DREAM_DEFAULTS: DreamTuning = {
     daysSinceLastDream: 1,
   },
   pressureThreshold: 10,
+  temperature: 0.5,
+  tempConclusion: 0.2,
   // active/absent = full weight; each compression step halves the pull.
   compressionDamping: { active: 1, condensed: 0.5, skeleton: 0.25 },
 }
@@ -108,6 +137,29 @@ export function seedCountFor(t: DreamTuning): number {
 export function epsilonFor(t: DreamTuning): number {
   // Halve the floor at full certainty, double it at zero.
   return t.epsilonFloor * (2 - clamp01(t.certainty))
+}
+
+/**
+ * Sampling temperature for this dream (§5.8).
+ *
+ * A flat tunable, deliberately NOT a function of certainty. certainty governs the
+ * graph walk — how far the material roams — and that mapping is sound. Wiring it
+ * to the sampler as well was tried and refuted by a live run: see the DreamTuning
+ * doc for the 1.9 collapse. Clamped to the OpenAI-compatible 0..2 range so an
+ * out-of-range override cannot produce a rejected request mid-run.
+ */
+export function temperatureFor(t: DreamTuning): number {
+  return clampTemp(t.temperature)
+}
+
+/** Conclusion-round temperature, clamped to the API's accepted range. */
+export function conclusionTemperatureFor(t: DreamTuning): number {
+  return clampTemp(t.tempConclusion)
+}
+
+function clampTemp(n: number): number {
+  if (!Number.isFinite(n)) return DREAM_DEFAULTS.temperature
+  return Math.max(0, Math.min(2, n))
 }
 
 function clamp01(n: number): number {

@@ -21,6 +21,8 @@ import {
   pEdgeFor,
   seedCountFor,
   epsilonFor,
+  temperatureFor,
+  conclusionTemperatureFor,
   computePressure,
   computeSalience,
   buildDreamScenes,
@@ -663,6 +665,51 @@ describe("resolveDreamsDir", () => {
     // edges and can never be verified: the whole loop breaks.
     expect(() => resolveDreamsDir(root, "dreams")).toThrow(/inside <wikiRoot>\/wiki/)
     expect(() => resolveDreamsDir(root, "../escape")).toThrow(/inside <wikiRoot>\/wiki/)
+  })
+})
+
+describe("temperatureFor", () => {
+  it("defaults to the conventional 0.5 and ignores certainty", () => {
+    // Deriving temperature from certainty was tried and refuted: a live run at
+    // 1.9 produced 4 tool calls, ZERO dream pages, and a report with broken
+    // syntax and invented tokens. Dream page prose travels inside write_file's
+    // arguments, so loosening the prose loosens the JSON that carries it.
+    // certainty still governs the graph walk; it must NOT touch the sampler.
+    expect(DREAM_DEFAULTS.temperature).toBe(0.5)
+    for (const certainty of [0, 0.3, 0.7, 1]) {
+      expect(temperatureFor(resolveTuning({ certainty }))).toBe(0.5)
+    }
+  })
+
+  it("leaves certainty driving the walk, not the sampler", () => {
+    const tight = resolveTuning({ certainty: 0.9 })
+    const wild = resolveTuning({ certainty: 0.1 })
+    expect(pEdgeFor(wild)).toBeLessThan(pEdgeFor(tight)) // walk still responds
+    expect(temperatureFor(wild)).toBe(temperatureFor(tight)) // sampler does not
+  })
+
+  it("honours an explicit override (library inheritance point)", () => {
+    expect(temperatureFor(resolveTuning({ temperature: 0.9 }))).toBe(0.9)
+    expect(temperatureFor(resolveTuning({ temperature: 0 }))).toBe(0)
+  })
+
+  it("clamps to the API's accepted 0..2 range", () => {
+    expect(temperatureFor(resolveTuning({ temperature: 5 }))).toBe(2)
+    expect(temperatureFor(resolveTuning({ temperature: -3 }))).toBe(0)
+  })
+
+  it("falls back to the default on a NaN temperature", () => {
+    // Same class of bug as the NaN certainty that silently produced zero scenes.
+    expect(temperatureFor(resolveTuning({ temperature: NaN }))).toBe(DREAM_DEFAULTS.temperature)
+  })
+
+  it("keeps the conclusion round cooler than the main loop by default", () => {
+    // The report states what actually happened; a hot sampler there invents
+    // operations the agent never performed.
+    expect(conclusionTemperatureFor(resolveTuning({}))).toBe(0.2)
+    expect(conclusionTemperatureFor(resolveTuning({}))).toBeLessThan(
+      temperatureFor(resolveTuning({})),
+    )
   })
 })
 

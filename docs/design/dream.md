@@ -232,6 +232,34 @@ Journal 行 schema：
 - slug 集合每次调用重建：否则本轮刚写的梦境页之间互链会被误报。
 - 带目录前缀的 `[[entities/三菱]]` 按 basename 比对，与图的键一致。
 
+### 5.8 采样温度 —— 不归 certainty 管（实测否掉了自己的假设）
+
+**起因**：`loop.ts` 里 `temperature: 0.1` 写死,所有智能体共用。dream 和 check/purge 用同一个温度,近乎贪心解码。当时的假设是:这就是五页梦境页同质的原因（同一句式骨架、同一认知动作——三个例子排成梯度再加粗一句金句），于是提议 `temperature = tempMin + (tempMax−tempMin) × (1−certainty)`,让 certainty 一并驱动采样。
+
+**实测直接否掉了这个假设**。`--temperature 1.9` 跑真 wiki:
+
+```
+Status: completed (2 iterations)     ← 4 次工具调用后自己停了
+dream pages: 0
+```
+
+产出的报告长这样:
+
+> Enough budget consumed; leaving a full record rather than a tidy subset was done with page, write_edge only when certain in cases done; remaining to dream to verify exact quot.
+> Sc4. 銀行卖房(中国拿) → to, "4-qinjin=real"? unknown so not claim
+
+语法崩坏、`quot` 截断词、自造 token `4-qinjin=real`、坏链接 `[[外汇||natural]]`,还声称「This page also links correctly already」——**它根本没写出任何页面**。
+
+**结构性原因**：梦境页正文是**通过 `write_file` 的参数**写出来的,所以散文采样和 JSON 采样是同一个分布。任何足以让文风"松动"的温度,同时在破坏那个负责写文的工具调用。这个架构下二者不可分离。
+
+**结论:创造性不在采样噪声里。** 本项目唯一真正有想象力的产出（章鱼求偶透镜那页）是在 **0.1** 温度下写出来的,靠的是外部框架强制的结构位移,不是采样多样性。杠杆在 prompt 的框架供给,不在温度。
+
+**落地**：
+- `DreamTuning.temperature` 默认 **0.5**（常规中间值）,**不由 certainty 派生**。certainty 继续只管图游走(它在那儿有效)。
+- `tempConclusion` 默认 0.2,比主循环更低:结论轮陈述已发生的事,高温会让它编造没做过的操作(本仓库修过一次这个 bug)。
+- `--temperature` 保留为显式实验开关,帮助文本写明高于约 1.5 会导致完全无产出。
+- 派生逻辑（`tempMin`/`tempMax` 双字段 + 反向插值）已删除:一个被实测否掉的机制留在代码里只会误导下一个人。
+
 ## 6. 渐进压缩（模拟遗忘）
 
 **核心：不是一次性删除，而是每次 dream 最多降一级。**

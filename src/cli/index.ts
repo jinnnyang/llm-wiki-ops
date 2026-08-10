@@ -538,6 +538,10 @@ program
   .option("--pressure", "only report how much the wiki needs a dream, then exit (no model call)")
   .option("--dreams-dir <dir>", "where dream pages live (default wiki/dreams; must stay inside wiki/)")
   .option("--certainty <0..1>", "how tightly to stick to the theme: 1 hugs the graph, 0 roams (default 0.5)")
+  .option(
+    "--temperature <0..2>",
+    "sampling temperature (default 0.5). Above ~1.5 the model stops emitting valid tool calls and writes no pages at all",
+  )
   .option("--max-iterations <n>", "dream depth: more iterations = a deeper, longer dream (default 50)")
   .option("--timeout <minutes>", "timeout in minutes (default 10)")
   .option("--json", "machine-readable JSON output")
@@ -575,12 +579,26 @@ program
         }
       }
 
+      // Validate up front: a bad --temperature would be rejected by the API
+      // mid-run, after the snapshot and the graph scan are already paid for.
+      let temperature: number | undefined
+      if (opts.temperature !== undefined) {
+        temperature = parseFloat(opts.temperature as string)
+        if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
+          console.error(
+            `Error: --temperature must be a number between 0 and 2 (got "${opts.temperature}")`,
+          )
+          process.exit(1)
+        }
+      }
+
       const result = await runDream({
         wikiRoot,
         theme,
         pressureOnly: !!opts.pressure,
         dreamsDir: opts.dreamsDir as string | undefined,
         certainty,
+        temperature,
         maxIterations: opts.maxIterations ? parseInt(opts.maxIterations as string, 10) : undefined,
         timeoutMs: opts.timeout ? parseInt(opts.timeout as string, 10) * 60_000 : undefined,
         dryRun: !!opts.dryRun,
