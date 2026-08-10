@@ -299,7 +299,18 @@ export async function updateNode(
   }
 
   if (patch.content !== undefined) {
-    newBody = `# ${fm.title}\n\n${patch.content}\n`
+    // Prepend the H1 only when the content does not already start with one.
+    //
+    // An agent that read the page before rewriting it naturally echoes the
+    // existing `# Title` back, and unconditional prepending then produced two
+    // identical headings — seen on a real compressed node (战争钨) where the dream
+    // agent returned the full body it had just read. Any H1 is accepted, not just
+    // an exact title match: a rewrite may legitimately retitle the body, and
+    // stacking a second heading on top is never the right answer.
+    const trimmed = patch.content.trimStart()
+    newBody = /^#\s/.test(trimmed)
+      ? `${trimmed.trimEnd()}\n`
+      : `# ${fm.title}\n\n${patch.content}\n`
     result.fieldsChanged.push("content")
   }
 

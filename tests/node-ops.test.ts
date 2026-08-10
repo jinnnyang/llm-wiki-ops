@@ -301,3 +301,61 @@ describe("rebuildIndex", () => {
     expect(indexContent).toContain("This is a custom section")
   })
 })
+
+describe("updateNode content H1 handling", () => {
+  // node-ops.ts prepends `# ${fm.title}` when replacing content. An agent that
+  // read the page before rewriting it echoes the existing heading back, and the
+  // unconditional prepend then produced two identical H1s — observed on a real
+  // compressed node (战争钨) after the dream agent returned the body it had just
+  // read. update_node is the compression primitive, so every compression passed
+  // through this path.
+  const read = async (slug: string) =>
+    fs.readFile(path.join(fixture.root, "wiki", "entities", `${slug}.md`), "utf-8")
+
+  it("does not stack a second H1 when content already starts with one", async () => {
+    const { slug } = await wiki.addNode({ title: "AMD", type: "entity", content: "Original." })
+    await wiki.updateNode(slug, { content: "# AMD\n\nCondensed body." })
+
+    const text = await read(slug)
+    expect(text.match(/^# /gm)?.length).toBe(1)
+    expect(text).toContain("Condensed body.")
+  })
+
+  it("still adds the H1 when content has none", async () => {
+    const { slug } = await wiki.addNode({ title: "AMD", type: "entity", content: "Original." })
+    await wiki.updateNode(slug, { content: "Just a body, no heading." })
+
+    const text = await read(slug)
+    expect(text).toContain("# AMD")
+    expect(text.match(/^# /gm)?.length).toBe(1)
+  })
+
+  it("keeps a heading that differs from the title, without adding another", async () => {
+    // A rewrite may legitimately retitle the body; stacking a second heading on
+    // top of it is never the right answer.
+    const { slug } = await wiki.addNode({ title: "AMD", type: "entity", content: "Original." })
+    await wiki.updateNode(slug, { content: "# AMD (condensed)\n\nBody." })
+
+    const text = await read(slug)
+    expect(text).toContain("# AMD (condensed)")
+    expect(text.match(/^# /gm)?.length).toBe(1)
+  })
+
+  it("is not fooled by leading blank lines before the H1", async () => {
+    const { slug } = await wiki.addNode({ title: "AMD", type: "entity", content: "Original." })
+    await wiki.updateNode(slug, { content: "\n\n# AMD\n\nBody." })
+
+    const text = await read(slug)
+    expect(text.match(/^# /gm)?.length).toBe(1)
+  })
+
+  it("does not treat an H2 as an existing top heading", async () => {
+    // `## Section` is not a title — the page still needs its H1.
+    const { slug } = await wiki.addNode({ title: "AMD", type: "entity", content: "Original." })
+    await wiki.updateNode(slug, { content: "## Details\n\nBody." })
+
+    const text = await read(slug)
+    expect(text).toContain("# AMD")
+    expect(text).toContain("## Details")
+  })
+})
