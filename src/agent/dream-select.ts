@@ -402,6 +402,14 @@ export interface SalienceEntry {
   score: number
   usage30: number
   inDegree: number
+  /**
+   * Outbound edges. Reported because a live dream mistook them for evidence of
+   * load-bearing-ness: it refused to compress 战争钨 as "referenced by 稀土全产业链
+   * and 中美关系现状" when those were nodes it POINTED AT. Its only inbound edge
+   * came from a dream page. Showing both directions makes the distinction
+   * checkable instead of guessable.
+   */
+  outDegree: number
   overdueDays: number
   /** Days since the node was last fact-checked; null when never checked. */
   daysSinceChecked: number | null
@@ -420,8 +428,10 @@ export function computeSalience(input: SalienceInput, tuning: DreamTuning): Sali
   const w = tuning.salienceWeights
 
   const inDegree = new Map<string, number>()
+  const outDegree = new Map<string, number>()
   for (const edge of graph.edges) {
     inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1)
+    outDegree.set(edge.source, (outDegree.get(edge.source) ?? 0) + 1)
   }
 
   const raw = pages.map((page) => {
@@ -433,6 +443,7 @@ export function computeSalience(input: SalienceInput, tuning: DreamTuning): Sali
       type: String(page.type),
       usage30,
       inDegree: inDegree.get(page.slug) ?? 0,
+      outDegree: outDegree.get(page.slug) ?? 0,
       overdueDays: overdueDays.get(page.slug) ?? 0,
       // Verification clock, NOT updated: node-ops bumps updated on every write,
       // so a dream that compresses a node would make it look freshly touched

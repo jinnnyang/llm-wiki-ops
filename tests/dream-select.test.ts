@@ -688,6 +688,7 @@ describe("forgetting candidates (renderContext decay list)", () => {
     page({ slug: "a" }), page({ slug: "b" }), page({ slug: "c" }), page({ slug: "d" }),
     page({ slug: "src", type: "source" }),
     page({ slug: "overview", type: "overview" }),
+    page({ slug: "dreampage", type: "dream" }),
   ]
   const rank = () =>
     computeSalience(
@@ -708,12 +709,17 @@ describe("forgetting candidates (renderContext decay list)", () => {
     expect(candidates[0]!.slug).not.toBe("hub")
   })
 
-  it("never offers source or overview pages", () => {
-    // Permanently exempt (§6.5) — leaving them in burns candidate slots on pages
-    // the model is required to refuse.
+  it("never offers source, overview, or dream pages", () => {
+    // source/overview are permanently exempt (§6.5); dream pages never walk the
+    // ladder (§6.1). All three burn candidate slots the model must refuse. Dream
+    // pages are the worst offender: in=0 with many out-edges sinks them to the
+    // very bottom, and a live run had 8 of 10 visible slots taken by them — zero
+    // actionable candidates, so the dream truthfully reported "nothing to
+    // compress" about a list that could not contain anything to compress.
     const slugs = pick(rank()).map((c) => c.slug)
     expect(slugs).not.toContain("src")
     expect(slugs).not.toContain("overview")
+    expect(slugs).not.toContain("dreampage")
   })
 
   it("keeps unread hub pages in the list, with in-degree visible", () => {
@@ -724,6 +730,22 @@ describe("forgetting candidates (renderContext decay list)", () => {
     expect(hub.inDegree).toBe(4)
     expect(hub.usage30).toBe(0)
     expect(rows.filter((r) => r.usage30 === 0).some((r) => r.slug === "hub")).toBe(true)
+  })
+
+  it("reports in-degree and out-degree separately", () => {
+    // A live dream refused to compress 战争钨 as "referenced by 稀土全产业链 and
+    // 中美关系现状" — but those were nodes it POINTED AT (out=7). Its only inbound
+    // edge came from a dream page (in=1). Out-degree says nothing about whether
+    // anything depends on a node, so the two must never collapse into one number.
+    const rows = rank()
+    const hub = rows.find((r) => r.slug === "hub")!
+    const a = rows.find((r) => r.slug === "a")!
+
+    expect(hub.inDegree).toBe(4)
+    expect(hub.outDegree).toBe(0)
+    // "a" points at two nodes and nothing points back at it: pure out-degree.
+    expect(a.outDegree).toBe(2)
+    expect(a.inDegree).toBe(0)
   })
 
   it("excludes anything that was actually read", () => {

@@ -606,8 +606,15 @@ function renderContext(
   // them just crowds out the pages that could actually decay. hub pages stay in —
   // "high in-degree" is a judgement call the model should make, and the numbers
   // are right there in the table.
+  // source/overview are permanently exempt (§6.5) and dream pages do not walk the
+  // ladder at all (§6.1) — they are settled or deleted outright. All three would
+  // otherwise crowd out the nodes that CAN decay: dream pages have in=0 and many
+  // out-edges, so they sink to the very bottom of the ranking and a live run found
+  // 8 of the 10 visible slots taken by them, leaving zero actionable candidates.
+  // The model correctly reported "nothing to compress" — of a list that could not
+  // contain anything to compress.
   const forgettable = salience.filter(
-    (s) => s.usage30 === 0 && s.type !== "source" && s.type !== "overview",
+    (s) => s.usage30 === 0 && s.type !== "source" && s.type !== "overview" && s.type !== "dream",
   )
   const forgotten = forgettable.slice(-10).reverse()
   if (forgotten.length) {
@@ -616,13 +623,16 @@ function renderContext(
       `## Never read in the last 30 days — lowest salience first (${forgotten.length} of ${forgettable.length})`,
     )
     lines.push(
-      `These are the decay candidates: nobody has read them and they score at the bottom. Check the in-degree before compressing — a node with many inbound links is load-bearing even when unread, and hubs must stay intact. Source and overview pages are already excluded.`,
+      `These are the decay candidates: nobody has read them and they score at the bottom. Source, overview and dream pages are already excluded — they never walk the ladder.`,
     )
-    lines.push(`| slug | score | inDeg | overdue | compression |`)
-    lines.push(`|---|---|---|---|---|`)
+    lines.push(
+      `**in** is what depends on THIS node — that is the load-bearing number. **out** is what this node points at, which says nothing about whether anything needs it: a node citing 中国 and 美国 is not thereby important. A node with in=0 or whose only inbound link is from a dream page is a safe compression target no matter how many hubs it references.`,
+    )
+    lines.push(`| slug | score | in | out | overdue | compression |`)
+    lines.push(`|---|---|---|---|---|---|`)
     for (const s of forgotten) {
       lines.push(
-        `| ${s.slug} | ${s.score} | ${s.inDegree} | ${s.overdueDays} | ${s.compression ?? "active"} |`,
+        `| ${s.slug} | ${s.score} | ${s.inDegree} | ${s.outDegree} | ${s.overdueDays} | ${s.compression ?? "active"} |`,
       )
     }
   }
