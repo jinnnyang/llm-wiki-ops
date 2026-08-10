@@ -209,6 +209,29 @@ Journal 行 schema：
 | check UNCERTAIN | 现成 `needs-verification` tag（`check.ts:158`）→ `read_graph tag=` |
 | 上次未闭合 thread | journal 最后一行 `threads_carried` → **优先重访**（dream-lag 的系统对应物）。**闭合判据（补评审缺口）**：一条 thread（hypothesis 页 / contradicts 边 / needs-verification 页 / UNCERTAIN 灵感）在本轮 dream 得到**裁决**即闭合并从 `threads_carried` 移除——裁决 = check 证实晋升 / dream 明确 link/no-link / 证伪删除。未裁决的 thread 原样带入下一轮 journal；任一判据歧义时按"保守携带"处理（宁多梦一次，不丢线索） |
 
+### 5.6 主题落点与"主题当透镜"（实跑后补）
+
+**问题**：主题原本只是 prompt 里一行软提示（`Theme: "x" — follow this thread.`），而场景是 salience + 随机游走**在主题之前**算好的——主题对选材没有任何否决权。实跑用荒诞主题「深海章鱼的求偶仪式」跑经济 wiki：7 页梦境页的 frontmatter 老实写着主题，正文零次提及，报告也不解释。用户输入一个主题，拿到 7 页无关内容，全程无提示。
+
+**修法（纯代码 + 注入，不加门禁）**：`findThemeMatches` 数主题在 slug/title/tags 上的命中页数，注入 prompt。
+
+- **只匹配 slug/title/tags，不搜 body**：正文里一次擦边提及不等于"图里有这方面材料"。
+- **CJK 切 2-gram，不用单字**：中文无空格必须切，但单字"海"会命中 海峡/航海/海外，为一个图里完全没有的主题伪造落点——正是本函数要检测的失败。
+- **`hasPurchase` 不用 `count > 0`**：该主题在 1150 页里恰好命中 1 页 `章鱼能源`（Octopus Energy，英国能源公司）。bigram 撞名不算落点，否则正好压掉为这种情况写的指引。门槛 `THEME_PURCHASE_MIN = 2`，撞名照实报告为 name collision。
+
+**零落点时不阻塞，改道**：明确许可把主题当**透镜**——问主题有什么结构（求偶 = 昂贵信号 + 欺骗 + 不确定下的选择），在既有材料里找同构，并要求页面标注"这个类比是做梦者的，不是来源的"。实测产出 `state-industrial-policy-as-courtship-display`：美欧稀土最低价机制读作昂贵信号、政府持股读作虚张声势、伊朗要海峡管理权读作"要求对方承认信号效力"，并推出可检验预测（劣势方才需要戏剧化炫耀，优势方安静）。主题词从 0 升到 32，每页字数 725→1390。
+
+### 5.7 悬挂 wikilink 必须报警（实跑后补）
+
+`buildGraphFromPages` 对目标不存在的 wikilink **静默跳过**（`graph-builder.ts:310` `if (!slugSet.has(target)) continue`）：不建边、不报错。对梦境页这是实质损失——§7 规定 wikilink **就是**溯源记录，所以一个拼错的 slug 意味着该页记录的推理对图不可见、永远无法被 check 核验。实跑写出 `[[外需强劲]]`（正确 slug 是 `外需强劲内需冷静`），全链路无人报告。
+
+修法：本地写工具（`write_file`/`edit_file`）落盘后回读文件、校验全部 wikilink，把悬挂目标**作为警告追加到工具结果**里。
+
+- **警告不是拒写**：文件已经写好，slug 错了不代表正文错了。给智能体看见并自行修正（镜子不是缰绳）。
+- **回读文件而非检查参数**：`edit_file` 只收到片段，只有落盘内容才能看到完整链接集合。副作用是下次编辑会顺带暴露此前遗留的悬挂链接。
+- slug 集合每次调用重建：否则本轮刚写的梦境页之间互链会被误报。
+- 带目录前缀的 `[[entities/三菱]]` 按 basename 比对，与图的键一致。
+
 ## 6. 渐进压缩（模拟遗忘）
 
 **核心：不是一次性删除，而是每次 dream 最多降一级。**

@@ -7,9 +7,12 @@
  */
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs"
-import { resolve, relative, join, dirname } from "node:path"
+import { resolve, relative, join, dirname, basename } from "node:path"
 import type { ToolDefinition } from "./openai.js"
 import { loadEnv } from "./env.js"
+import { extractWikilinks } from "../io/wikilink.js"
+import { normalizeSlug } from "../utils/slug.js"
+import { INFRA_FILES } from "../types.js"
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -277,6 +280,107 @@ function toolListDirectory(wikiRoot: string, args: Record<string, unknown>): Loc
 
 const writeQueues = new Map<string, Promise<void>>()
 
+// ── Wikilink validation ─────────────────────────────────────────────
+
+/**
+ * Slugs of every page in the wiki, normalized. Built per call — a write tool is
+ * not the hot path, and a stale set would report false dangles for a page the
+ * agent created moments ago.
+ */
+function collectWikiSlugs(wikiRoot: string): Set<string> {
+  const slugs = new Set<string>()
+  const wikiDir = join(wikiRoot, "wiki")
+  const walk = (dir: string): void => {
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      const full = join(dir, name)
+      let isDir: boolean
+      try {
+        isDir = statSync(full).isDirectory()
+      } catch {
+        continue
+      }
+      if (isDir) walk(full)
+      else if (name.endsWith(".md") && !INFRA_FILES.has(name)) {
+        slugs.add(normalizeSlug(basename(name, ".md")))
+      }
+    }
+  }
+  walk(wikiDir)
+  return slugs
+}
+
+/**
+ * Wikilink targets in `content` that point at no existing page.
+ *
+ * buildGraphFromPages silently skips a dangling wikilink (graph-builder.ts:310):
+ * no edge, no warning. For a dream page that is a real loss — the links ARE its
+ * provenance record, so a mistyped one means the reasoning it documents is
+ * invisible to the graph and can never be verified. A live run wrote
+ * `[[外需强劲]]` for the page actually slugged `外需强劲内需冷静`, and nothing
+ * anywhere reported it.
+ *
+ * Reported as a warning appended to the tool result rather than a refusal: the
+ * file is already written and the prose may be right even when a slug is wrong.
+ * The agent sees the problem and can fix it — shown, not enforced.
+ */
+export function findDanglingWikilinks(content: string, knownSlugs: Set<string>): string[] {
+  const dangling: string[] = []
+  for (const target of new Set(extractWikilinks(content))) {
+    // Links may carry a directory prefix ("entities/三菱") — the graph keys on
+    // the basename, so compare on that.
+    const slug = normalizeSlug(basename(target))
+    if (!knownSlugs.has(slug)) dangling.push(target)
+  }
+  return dangling
+}
+
+/** Warning text for a write whose wikilinks do not all resolve. */
+function wikilinkWarning(wikiRoot: string, path: string, content: string): string {
+  if (!path.endsWith(".md")) return ""
+  const dangling = findDanglingWikilinks(content, collectWikiSlugs(wikiRoot))
+  if (dangling.length === 0) return ""
+  return (
+    `\n\nWARNING: ${dangling.length} wikilink(s) in this file point to no existing page: ` +
+    `${dangling.map((d) => `[[${d}]]`).join(", ")}. ` +
+    `A dangling wikilink produces NO graph edge and is silently ignored, so the ` +
+    `connection you documented will be invisible. Check the exact slug (list_directory ` +
+    `or wiki.get_node) and fix it with edit_file, or drop the link.`
+  )
+}
+
+/**
+ * Run a write and append a dangling-wikilink warning to its result.
+ *
+ * Reads the file back rather than inspecting the args: edit_file only receives a
+ * fragment, so the final on-disk content is the only place the full link set can
+ * be seen. Never turns a success into an error — the write happened, and the
+ * warning is information for the agent's next move.
+ */
+async function withWikilinkCheck(
+  wikiRoot: string,
+  path: string,
+  run: () => Promise<LocalToolResult>,
+): Promise<LocalToolResult> {
+  const result = await run()
+  if (result.isError) return result
+
+  let content: string
+  try {
+    content = readFileSync(resolveSandboxed(wikiRoot, path), "utf-8")
+  } catch {
+    return result // unreadable after write — nothing useful to add
+  }
+
+  const warning = wikilinkWarning(wikiRoot, path, content)
+  return warning ? { ...result, content: result.content + warning } : result
+}
+
 function serializedWrite(key: string, fn: () => LocalToolResult): Promise<LocalToolResult> {
   const prev = writeQueues.get(key) ?? Promise.resolve()
   const next = prev.then(() => {
@@ -474,7 +578,9 @@ export function createLocalTools(
           } catch (e) {
             return { content: (e as Error).message, isError: true }
           }
-          return serializedWrite(path, () => toolWriteFile(wikiRoot, args))
+          return withWikilinkCheck(wikiRoot, path, () =>
+            serializedWrite(path, () => toolWriteFile(wikiRoot, args)),
+          )
         }
         case "edit_file": {
           const path = (args["path"] as string) ?? ""
@@ -483,7 +589,9 @@ export function createLocalTools(
           } catch (e) {
             return { content: (e as Error).message, isError: true }
           }
-          return serializedWrite(path, () => toolEditFile(wikiRoot, args))
+          return withWikilinkCheck(wikiRoot, path, () =>
+            serializedWrite(path, () => toolEditFile(wikiRoot, args)),
+          )
         }
         case "web_search":
           return toolWebSearch(args)
