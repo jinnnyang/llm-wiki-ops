@@ -46,7 +46,35 @@ export interface GraphNode {
   related: RelatedEntry[]
   sources: string[]
   created: string // YYYY-MM-DD (page clock: when wiki created this page)
-  updated: string // YYYY-MM-DD (page clock: any edit)
+  /**
+   * YYYY-MM-DD — page clock: bumped on ANY write to the file.
+   *
+   * DO NOT use this to judge whether a node is neglected, stale, or unmaintained.
+   * It records that bytes moved, not that anyone looked after the content, and the
+   * agents write constantly: a dream compressing a node bumps it, adding an edge
+   * bumps both endpoints, a rename bumps the page. Anything that asks "has anyone
+   * maintained this?" and reads `updated` gets the answer reset by its own writes.
+   *
+   * This has produced two real bugs, in opposite directions:
+   *
+   *   - the forgetting ladder: compressing a node reset its staleness, dropping it
+   *     off the forgetting list, so skeleton → delete was unreachable (413 days
+   *     overdue → NOT DUE after one compression)
+   *   - purge: a compressed skeleton looked freshly maintained and became INVISIBLE
+   *     to `purge --stale-before`, so the most decayed nodes were the ones that
+   *     escaped cleanup
+   *
+   * Use instead:
+   *   - `checked` — someone verified the facts (real maintenance)
+   *   - `as_of`   — when the facts held; only a deliberate revision moves it
+   *   - for neglect: `checked ?? as_of`
+   *     (scanFreshness's `ignoreUpdatedClock`, or purge's stalenessClock)
+   *
+   * `updated` is legitimate for: "what changed since date X" activity feeds, the
+   * check agent's re-verification schedule (a content change IS a reason to
+   * re-check), and display.
+   */
+  updated: string
   as_of?: string // fact clock: when the described state held / event happened
   checked?: string // verification clock: last fact-check (check agent only)
   path: string // relative to wikiRoot (e.g. "wiki/entities/ai基建周期.md")
@@ -105,6 +133,7 @@ export interface WikiPage {
   related: RelatedEntry[]
   sources: string[]
   created: string
+  /** Bumped on any write — NOT a maintenance signal. See GraphNode.updated. */
   updated: string
   as_of?: string
   checked?: string

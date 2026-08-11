@@ -363,7 +363,9 @@ export async function updateNode(
     return result // no-op (idempotent)
   }
 
-  // Bump updated
+  // Bump `updated`: the page clock, moved by any write. Deliberately NOT a
+  // maintenance signal — see GraphNode.updated in types.ts before reading this
+  // field to judge staleness or neglect (two real bugs came from that).
   fm.updated = today()
 
   // If no cross-dir move, write in place
@@ -466,6 +468,8 @@ export async function renameNode(
   // Read old file, update its internal references if any self-refs
   const { content: oldContent } = await readFileClean(oldPath)
   const { fm, body } = await parsePage(oldPath)
+  // A rename bumps the page clock too — the slug moved, the knowledge did not.
+  // One more reason `updated` cannot answer "is this node neglected?" (types.ts).
   fm.updated = today()
   const newPageContent = composePage(fm, body)
 

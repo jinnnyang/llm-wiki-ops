@@ -164,7 +164,11 @@ export async function addEdge(
     result.relationAfter = relation ?? result.relationBefore
   }
 
-  // Bump updated and reconstruct uniformly
+  // Bump `updated` and reconstruct uniformly.
+  //
+  // NOTE: an edge write bumps the SOURCE page's clock, so linking A→B makes A look
+  // freshly touched. That is why `updated` must never be read as a maintenance
+  // signal — see GraphNode.updated in types.ts.
   fm.updated = today()
   const newContent = composePage(fm, newBody)
   changes.push({ path: srcPath, oldContent: srcContent, newContent, expectExists: true })
@@ -244,7 +248,8 @@ export async function removeEdge(
     removeRelated(fm, tgtNorm)
   }
 
-  // Bump updated and reconstruct uniformly
+  // Bump updated and reconstruct uniformly. Removing an edge bumps the source
+  // page's clock as much as adding one did — see GraphNode.updated in types.ts.
   if (srcFm) {
     fm.updated = today()
   }
