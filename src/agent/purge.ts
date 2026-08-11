@@ -13,7 +13,7 @@
  */
 
 import { WikiGraph } from "../index.js"
-import { scanWiki } from "../core/graph-builder.js"
+import { scanWiki, type ScannedPage } from "../core/graph-builder.js"
 import { runAgent, type AgentConfig, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
 import { resolveMcpServerPath } from "./mcp-server-path.js"
@@ -31,12 +31,56 @@ export interface PurgeByDateOptions {
 }
 
 export interface PurgeByDateResult {
-  affected: Array<{ slug: string; title: string; updated: string; action: string }>
+  affected: Array<{
+    slug: string
+    title: string
+    /** The staleness clock actually compared, not necessarily `updated`. */
+    updated: string
+    /** Which field that clock came from, so a dry-run report is auditable. */
+    clockSource: "checked" | "updated" | "as_of"
+    action: string
+  }>
   totalScanned: number
+  /**
+   * Pages skipped for having neither `checked` nor `as_of`. Not an error, but it
+   * must be visible: a wiki whose pages carry no fact clocks would otherwise look
+   * like a wiki with nothing stale in it.
+   */
+  skippedNoClock: number
 }
 
 /**
- * Pure code: scan all nodes, filter by updated < staleBefore, batch mark/delete.
+ * The staleness clock for purge: `checked ?? as_of`, NOT `updated`.
+ *
+ * purge asks "has anyone maintained this?", and `updated` cannot answer it because
+ * node-ops bumps it on every write — including a dream's compression writes, which
+ * are the opposite of maintenance.
+ *
+ * Measured before this fix, two pages equally stale at 2024-01-01:
+ *
+ *   untouched-stale   active    updated=2024-01-01  → PURGED
+ *   compressed-stale  skeleton  updated=2026-08-11  → INVISIBLE TO PURGE
+ *
+ * A dream compressed the second one to a hollow skeleton, which bumped `updated`
+ * to today, and purge then read it as fresh. The node whose content had actually
+ * decayed away was the one that escaped cleanup — exactly backwards. Compression
+ * was granting nodes immunity from purge.
+ *
+ * `as_of` is the honest fallback: it says when the facts were true, and only a
+ * deliberate fact revision moves it. `checked` still wins when present, because a
+ * real verification IS maintenance.
+ *
+ * Same reasoning as ScanFreshnessOptions.ignoreUpdatedClock; both are the
+ * "neglect" question rather than the "needs re-verifying" question.
+ */
+function stalenessClock(page: ScannedPage): { date: string; source: "checked" | "as_of" } | null {
+  if (page.checked) return { date: page.checked, source: "checked" }
+  if (page.as_of) return { date: page.as_of, source: "as_of" }
+  return null
+}
+
+/**
+ * Pure code: scan all nodes, filter by staleness clock < staleBefore, batch mark/delete.
  * Uses scanWiki directly (not readGraph) to avoid the 500-node limit.
  */
 export async function purgeByDate(options: PurgeByDateOptions): Promise<PurgeByDateResult> {
@@ -45,23 +89,46 @@ export async function purgeByDate(options: PurgeByDateOptions): Promise<PurgeByD
   const pages = await scanWiki(wikiDir, options.wikiRoot)
 
   const affected: PurgeByDateResult["affected"] = []
+  /** Pages with no honest staleness clock — reported, never guessed at. */
+  let noClock = 0
 
   for (const page of pages) {
-    if (!page.updated || page.updated >= options.staleBefore) continue
+    const clock = stalenessClock(page)
+    if (clock === null) {
+      // No `checked` and no `as_of`. `updated` is the only date left and it is not
+      // trustworthy here (see stalenessClock), so this page is skipped rather than
+      // purged on a clock that a dream's compression could have set. Surfaced in
+      // the result so a silent no-op is distinguishable from "nothing was stale".
+      noClock++
+      continue
+    }
+    if (clock.date >= options.staleBefore) continue
 
     if (options.hardDelete) {
       await wiki.deleteNode(page.slug, { dryRun: options.dryRun })
-      affected.push({ slug: page.slug, title: page.title, updated: page.updated, action: "deleted" })
+      affected.push({
+        slug: page.slug,
+        title: page.title,
+        updated: clock.date,
+        clockSource: clock.source,
+        action: "deleted",
+      })
     } else {
       await wiki.updateNode(page.slug, {
         status: "invalidated",
         dryRun: options.dryRun,
       })
-      affected.push({ slug: page.slug, title: page.title, updated: page.updated, action: "invalidated" })
+      affected.push({
+        slug: page.slug,
+        title: page.title,
+        updated: clock.date,
+        clockSource: clock.source,
+        action: "invalidated",
+      })
     }
   }
 
-  return { affected, totalScanned: pages.length }
+  return { affected, totalScanned: pages.length, skippedNoClock: noClock }
 }
 
 export interface PurgeBySlugsOptions {

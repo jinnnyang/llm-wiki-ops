@@ -389,7 +389,15 @@ program
         } else {
           console.log(`Scanned ${result.totalScanned} nodes, affected ${result.affected.length}:`)
           for (const a of result.affected) {
-            console.log(`  ${a.action}: ${a.slug} (${a.title}) [updated: ${a.updated}]`)
+            // Label the clock, not just the date: staleness is measured from
+            // checked/as_of, never from `updated` (a dream's compression bumps
+            // that). Printing a bare "updated:" would misname the number.
+            console.log(`  ${a.action}: ${a.slug} (${a.title}) [${a.clockSource}: ${a.updated}]`)
+          }
+          if (result.skippedNoClock > 0) {
+            console.log(
+              `  (${result.skippedNoClock} skipped: no checked/as_of date to judge staleness by)`,
+            )
           }
         }
         return
