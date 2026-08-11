@@ -172,6 +172,41 @@ npm test
 npm run build
 ```
 
+### Live tests
+
+`npm test` is fast, offline and deterministic. It also cannot catch bugs that
+live in the seam between components — a real one made the forgetting ladder's
+last step unreachable while all 413 unit tests stayed green.
+
+`npm run test:live` runs one real dream: real model, real MCP subprocess, real
+disk, on a throwaway copy of a real wiki.
+
+```bash
+npm run build          # live tests spawn the compiled MCP server
+npm run test:live
+```
+
+Requirements — it **skips** (does not fail) when they are missing:
+
+- `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL_NAME` in `.env`
+- a source wiki, overridable with `WIKI_LIVE_SOURCE=/path/to/wiki`
+
+Costs minutes and real API spend per run, so it is deliberately outside
+`npm test`.
+
+Every assertion is an **invariant** — something that must hold no matter what
+the model decides. How many edges it writes and what it compresses are its
+judgement, and asserting those would produce a suite that fails whenever the
+model behaves reasonably but differently. What is asserted: the run completes,
+writes stay in scope, compression moves at most one rung per node, only
+`skeleton` nodes get deleted, sources/overview are never deleted, no *new*
+dangling wikilinks appear (the source wiki already has hundreds — the test is
+incremental), the journal records what pure code injected, and a dream's own
+writes do not inflate the next dream's pressure.
+
+Keep artefacts for inspection with `WIKI_LIVE_KEEP=1`; the temp wiki is
+otherwise deleted after the run. The source wiki is only ever read.
+
 ## License
 
 MIT

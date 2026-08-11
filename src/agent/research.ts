@@ -9,6 +9,7 @@
 
 import { runAgent, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
+import { resolveMcpServerPath } from "./mcp-server-path.js"
 import { createLocalTools, type LocalToolRegistry } from "./tools.js"
 import { DREAM_CITATION_DISCIPLINE } from "./dream-citation.js"
 import { resolveLlmConfig, type LlmConfig, type ToolDefinition } from "./openai.js"
@@ -211,7 +212,7 @@ export async function runResearch(options: ResearchOptions): Promise<AgentResult
       name: "wiki",
       transport: "stdio",
       command: "node",
-      args: [join(import.meta.dirname, "..", "mcp", "index.js")],
+      args: [resolveMcpServerPath()],
       env: { SELECTED_WIKI: options.wikiRoot, WIKI_AGENT: "research" },
     })
 

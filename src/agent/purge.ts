@@ -16,6 +16,7 @@ import { WikiGraph } from "../index.js"
 import { scanWiki } from "../core/graph-builder.js"
 import { runAgent, type AgentConfig, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
+import { resolveMcpServerPath } from "./mcp-server-path.js"
 import { createLocalTools, type LocalToolRegistry } from "./tools.js"
 import { resolveLlmConfig, type LlmConfig, type ToolDefinition } from "./openai.js"
 import { join } from "node:path"
@@ -225,7 +226,7 @@ export async function runPurgeAgent(options: PurgeQueryOptions): Promise<AgentRe
       name: "wiki",
       transport: "stdio",
       command: "node",
-      args: [join(import.meta.dirname, "..", "mcp", "index.js")],
+      args: [resolveMcpServerPath()],
       env: { SELECTED_WIKI: options.wikiRoot, WIKI_AGENT: "purge" },
     })
 

@@ -20,6 +20,7 @@ import * as fs from "node:fs/promises"
 
 import { runAgent, type AgentResult } from "./loop.js"
 import { McpClient } from "./mcp.js"
+import { resolveMcpServerPath } from "./mcp-server-path.js"
 import { createLocalTools, type LocalToolRegistry } from "./tools.js"
 import { resolveLlmConfig, type LlmConfig, type ToolDefinition } from "./openai.js"
 import { scanWiki, buildGraphFromPages, type ScannedPage } from "../core/graph-builder.js"
@@ -740,7 +741,7 @@ export async function runDream(options: DreamOptions): Promise<DreamResult> {
       name: "wiki",
       transport: "stdio",
       command: "node",
-      args: [join(import.meta.dirname, "..", "mcp", "index.js")],
+      args: [resolveMcpServerPath()],
       env: { SELECTED_WIKI: options.wikiRoot, WIKI_AGENT: "dream" },
     })
 
